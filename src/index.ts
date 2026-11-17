@@ -39,6 +39,7 @@ import {
 import { CONFIG } from "./config";
 import { handleMessageCreate } from "./events/messageCreate";
 import { handleInteractionCreate } from "./events/interactionCreate";
+import { handleVoiceStateUpdate } from "./events/voiceStateUpdate";
 import { registerPlayerEvents } from "./events/playerEvents";
 
 // Initialize Discord Client with required Gateway Intents
@@ -91,6 +92,9 @@ client.on("messageCreate", handleMessageCreate);
 
 // InteractionCreate Handler for UI Buttons and Dropdown Controls
 client.on("interactionCreate", handleInteractionCreate);
+
+// VoiceStateUpdate Handler: 1-minute auto leave when channel is empty
+client.on("voiceStateUpdate", handleVoiceStateUpdate);
 
 // Log In to Discord
 if (!CONFIG.TOKEN) {

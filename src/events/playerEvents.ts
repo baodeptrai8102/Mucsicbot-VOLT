@@ -7,8 +7,13 @@ import {
   createErrorEmbed
 } from "../ui/playerUi";
 import { CONFIG } from "../config";
+import { clearEmptyChannelTimer } from "./voiceStateUpdate";
 
 export function registerPlayerEvents(manager: PlayerManager, client: Client): void {
+  // playerDestroy event: Clean up empty channel timer when player is destroyed
+  manager.on("playerDestroy", (player: Player) => {
+    clearEmptyChannelTimer(player.guildId);
+  });
   // trackStart event: Send Now Playing Embed and interactive components to the channel in player.userdata
   manager.on("trackStart", async (player: Player, track: Track) => {
     try {
