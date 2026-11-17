@@ -5,8 +5,11 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node --no-warnings dist/index.js",
+    "start": "node --no-warnings --experimental-require-module dist/index.js",
     "dev": "tsx src/index.ts"
+  },
+  "engines": {
+    "node": ">=20.18.0"
   },
   "keywords": [
     "discord",
