@@ -77,12 +77,17 @@ async function bootstrap(): Promise<void> {
     AttachmentsPlugin
   } = await importEsm<typeof import("@ziplayer/plugin")>("@ziplayer/plugin");
 
+  const soundCloudPlugin = new SoundCloudPlugin();
+  (soundCloudPlugin as any).ready?.catch((err: any) => {
+    console.log("⚠️ [SoundCloud] Không thể kết nối SoundCloud từ mạng máy chủ:", err?.message || err);
+  });
+
   // Initialize ZiPlayer PlayerManager singleton ONCE at application startup
   const playerManager = new PlayerManager({
     plugins: [
       new TTSPlugin({ defaultLang: "vi" }),
       new YouTubePlugin(),
-      new SoundCloudPlugin(),
+      soundCloudPlugin,
       new SpotifyPlugin(),
       new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }) // 25MB max
     ],
