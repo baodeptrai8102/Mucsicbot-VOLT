@@ -161,7 +161,7 @@ export function createControlDropdownRow(): ActionRowBuilder<StringSelectMenuBui
 /**
  * Creates the exact Search Timeout Warning Embed
  */
-export function createSearchTimeoutEmbed(timeoutSeconds: number = 20): EmbedBuilder {
+export function createSearchTimeoutEmbed(timeoutSeconds: number = 45): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(CONFIG.WARNING_COLOR)
     .setTitle(`⚠️ Quá thời gian tìm kiếm (${timeoutSeconds} giây)!`)

@@ -82,11 +82,55 @@ async function bootstrap(): Promise<void> {
     console.log("⚠️ [SoundCloud] Không thể kết nối SoundCloud từ mạng máy chủ:", err?.message || err);
   });
 
+  // Configure high-speed YouTube stream pipeline bypassing datacenter 403 blocks
+  const youtubePlugin = new YouTubePlugin({
+    fistStream: async (track: any) => {
+      try {
+        const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
+        if (!id) return null;
+        const yt = (youtubePlugin as any).client;
+        if (!yt) return null;
+        const webStream = await yt.download(id, {
+          type: "audio",
+          quality: "best",
+          client: "IOS"
+        });
+        const { Readable } = await import("stream");
+        return {
+          stream: Readable.fromWeb(webStream as any),
+          type: "arbitrary"
+        };
+      } catch (err) {
+        return null;
+      }
+    },
+    fallbackStream: async (track: any) => {
+      try {
+        const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
+        if (!id) return null;
+        const yt = (youtubePlugin as any).client;
+        if (!yt) return null;
+        const webStream = await yt.download(id, {
+          type: "audio",
+          quality: "best",
+          client: "ANDROID"
+        });
+        const { Readable } = await import("stream");
+        return {
+          stream: Readable.fromWeb(webStream as any),
+          type: "arbitrary"
+        };
+      } catch (err) {
+        return null;
+      }
+    }
+  } as any);
+
   // Initialize ZiPlayer PlayerManager singleton ONCE at application startup
   const playerManager = new PlayerManager({
     plugins: [
       new TTSPlugin({ defaultLang: "vi" }),
-      new YouTubePlugin(),
+      youtubePlugin,
       soundCloudPlugin,
       new SpotifyPlugin(),
       new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }) // 25MB max

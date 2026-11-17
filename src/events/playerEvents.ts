@@ -78,6 +78,10 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
 
   // connectionError event: Log connection failures
   manager.on("connectionError", async (player: Player, error: any) => {
+    // Ignore internal aborts from superseded operations to prevent confusing users
+    if (error?.message?.includes("aborted") || error?.name === "AbortError") {
+      return;
+    }
     console.error(`[Connection Error] Guild ${player.guildId}:`, error);
     try {
       const channel = player.userdata?.channel as any;

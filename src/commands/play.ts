@@ -67,20 +67,26 @@ export const playCommand: Command = {
       player.userdata = { ...(player.userdata || {}), channel: message.channel };
     }
 
-    // Connect to voice channel immediately if not connected
-    if (!player.connection) {
+    // Connect to voice channel immediately if not connected or not ready
+    const isConnectionReady =
+      player.connection &&
+      (player.connection.state as any)?.status === "ready";
+
+    if (!isConnectionReady) {
       try {
         await player.connect(voiceChannel as any);
       } catch (connError: any) {
-        console.error("[Voice Connection Error]:", connError);
-        await loadingMsg.edit({
-          embeds: [
-            createErrorEmbed(
-              `Không thể kết nối vào kênh thoại: ${connError?.message || "Kiểm tra quyền truy cập của bot!"}`
-            )
-          ]
-        });
-        return;
+        if (!connError?.message?.includes("aborted")) {
+          console.error("[Voice Connection Error]:", connError);
+          await loadingMsg.edit({
+            embeds: [
+              createErrorEmbed(
+                `Không thể kết nối vào kênh thoại: ${connError?.message || "Kiểm tra quyền truy cập của bot!"}`
+              )
+            ]
+          });
+          return;
+        }
       }
     }
 
