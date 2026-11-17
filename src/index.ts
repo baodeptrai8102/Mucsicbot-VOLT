@@ -7,6 +7,20 @@ if (ffmpegStatic) {
   process.env.FFMPEG_PATH = ffmpegStatic;
 }
 
+// Suppress Node.js ExperimentalWarning (e.g. JSON module imports from youtubei.js)
+// to prevent Render from displaying stderr warning flags
+process.removeAllListeners("warning");
+process.on("warning", (warning) => {
+  if (
+    warning.name === "ExperimentalWarning" ||
+    warning.name === "DeprecationWarning" ||
+    warning.message.includes("ExperimentalWarning")
+  ) {
+    return;
+  }
+  console.warn(warning.name, warning.message);
+});
+
 // ============================================================================
 // 2. ZERO-CRASH SAFETY NET: Global Error Interceptors
 // ============================================================================
@@ -27,7 +41,7 @@ startKeepAliveServer();
 // ============================================================================
 // 4. ZIPLAYER & DISCORD CLIENT INITIALIZATION
 // ============================================================================
-import { Client, GatewayIntentBits, ActivityType } from "discord.js";
+import { Client, GatewayIntentBits, ActivityType, Events } from "discord.js";
 import { PlayerManager } from "ziplayer";
 import { CONFIG } from "./config";
 import { handleMessageCreate } from "./events/messageCreate";
@@ -52,6 +66,8 @@ const client = new Client({
 
 // Bootstrap application asynchronously
 async function bootstrap(): Promise<void> {
+  console.log("🔄 [ZiPlayer] Đang nạp các plugin âm thanh...");
+
   // Dynamically load pure ES Module plugins from @ziplayer/plugin
   const {
     YouTubePlugin,
@@ -75,9 +91,10 @@ async function bootstrap(): Promise<void> {
 
   // Register ZiPlayer Manager Events
   registerPlayerEvents(playerManager, client);
+  console.log("✅ [ZiPlayer] Hệ thống âm thanh đã sẵn sàng!");
 
   // Register Discord Client Event Listeners
-  client.once("ready", (c) => {
+  const onReady = (c: any) => {
     console.log(`=======================================================`);
     console.log(`⚡ VOLT MUSIC BOT is ONLINE!`);
     console.log(`🤖 Logged in as: ${c.user.tag} (ID: ${c.user.id})`);
@@ -94,7 +111,9 @@ async function bootstrap(): Promise<void> {
       ],
       status: "online"
     });
-  });
+  };
+
+  client.once(Events.ClientReady, onReady);
 
   // MessageCreate Handler for Prefix Commands (!)
   client.on("messageCreate", handleMessageCreate);
@@ -107,10 +126,11 @@ async function bootstrap(): Promise<void> {
 
   // Log In to Discord
   if (!CONFIG.TOKEN) {
-    console.warn(
-      "⚠️ [WARNING] DISCORD_TOKEN is not set in environment or .env file! Please set DISCORD_TOKEN to run the bot."
+    console.log(
+      "⚠️ [CHÚ Ý] Chưa cấu hình DISCORD_TOKEN! Vui lòng thêm biến môi trường DISCORD_TOKEN trên Render Dashboard."
     );
   } else {
+    console.log("🔄 Đang kết nối vào Discord Gateway...");
     await client.login(CONFIG.TOKEN);
   }
 }
