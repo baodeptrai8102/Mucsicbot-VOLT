@@ -24,7 +24,13 @@ process.on("warning", (warning) => {
 // ============================================================================
 // 2. ZERO-CRASH SAFETY NET: Global Error Interceptors
 // ============================================================================
-process.on("unhandledRejection", (reason, promise) => {
+process.on("unhandledRejection", (reason: any, promise) => {
+  if (
+    reason?.message?.includes("Edge TTS") ||
+    reason?.message?.includes("getEdgeTTSVoices")
+  ) {
+    return;
+  }
   console.error("[Anti-Crash] Unhandled Rejection at:", promise, "reason:", reason);
 });
 
@@ -82,54 +88,18 @@ async function bootstrap(): Promise<void> {
     console.log("⚠️ [SoundCloud] Không thể kết nối SoundCloud từ mạng máy chủ:", err?.message || err);
   });
 
-  // Configure high-speed YouTube stream pipeline bypassing datacenter 403 blocks
-  const youtubePlugin = new YouTubePlugin({
-    fistStream: async (track: any) => {
-      try {
-        const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
-        if (!id) return null;
-        const yt = (youtubePlugin as any).client;
-        if (!yt) return null;
-        const webStream = await yt.download(id, {
-          type: "audio",
-          quality: "best",
-          client: "IOS"
-        });
-        const { Readable } = await import("stream");
-        return {
-          stream: Readable.fromWeb(webStream as any),
-          type: "arbitrary"
-        };
-      } catch (err) {
-        return null;
-      }
-    },
-    fallbackStream: async (track: any) => {
-      try {
-        const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
-        if (!id) return null;
-        const yt = (youtubePlugin as any).client;
-        if (!yt) return null;
-        const webStream = await yt.download(id, {
-          type: "audio",
-          quality: "best",
-          client: "ANDROID"
-        });
-        const { Readable } = await import("stream");
-        return {
-          stream: Readable.fromWeb(webStream as any),
-          type: "arbitrary"
-        };
-      } catch (err) {
-        return null;
-      }
-    }
-  } as any);
+  const ttsPlugin = new TTSPlugin({ defaultLang: "vi" });
+  (ttsPlugin as any).ready?.catch?.((err: any) => {
+    console.log("⚠️ [TTS] Không thể kết nối Edge TTS:", err?.message || err);
+  });
+
+  // Native YouTube plugin using SABR / BotGuard stream (0 transcode CPU, no non-2xx CDN errors)
+  const youtubePlugin = new YouTubePlugin();
 
   // Initialize ZiPlayer PlayerManager singleton ONCE at application startup
   const playerManager = new PlayerManager({
     plugins: [
-      new TTSPlugin({ defaultLang: "vi" }),
+      ttsPlugin,
       youtubePlugin,
       soundCloudPlugin,
       new SpotifyPlugin(),

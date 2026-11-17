@@ -56,12 +56,22 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
     }
   });
 
+  // Keep track of recently reported error tracks to prevent duplicate spam
+  const recentErrorTracks = new Set<string>();
+
   // playerError event: Log and safely inform without crashing process
   manager.on("playerError", async (player: Player, error: any, track?: Track) => {
     console.error(`[Player Error] Guild ${player.guildId}:`, error);
     try {
       const channel = player.userdata?.channel as any;
       if (!channel || typeof channel.send !== "function") return;
+
+      const trackKey = `${player.guildId}:${track?.id || track?.title || "unknown"}`;
+      if (recentErrorTracks.has(trackKey)) {
+        return;
+      }
+      recentErrorTracks.add(trackKey);
+      setTimeout(() => recentErrorTracks.delete(trackKey), 15000);
 
       const trackInfo = track ? ` khi phát bài **${track.title}**` : "";
       await channel.send({

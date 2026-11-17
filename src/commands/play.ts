@@ -61,6 +61,11 @@ export const playCommand: Command = {
         leaveOnEnd: true,
         leaveOnEmpty: true,
         volume: CONFIG.DEFAULT_VOLUME,
+        antiStuck: {
+          enabled: true,
+          maxRetries: 0,
+          controlledSkipThreshold: 1
+        },
         userdata: { channel: message.channel }
       });
     } else {
