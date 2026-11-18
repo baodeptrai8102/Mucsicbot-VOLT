@@ -2,6 +2,7 @@ import {
   Events,
   GuildMember,
   Interaction,
+  MessageFlags,
 } from "discord.js";
 import { getPlayer } from "ziplayer";
 import { checkCooldown } from "../config.js";
@@ -27,8 +28,8 @@ export async function execute(interaction: Interaction): Promise<void> {
     if (cooldown.onCooldown) {
       await interaction.reply({
         content: `⏳ Anh Bo thao tác nhanh quá nè! Vui lòng đợi **${cooldown.remainingSeconds} giây** nhé 🦊`,
-        ephemeral: true,
-      });
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
@@ -36,8 +37,8 @@ export async function execute(interaction: Interaction): Promise<void> {
     if (!player) {
       await interaction.reply({
         content: "❌ Không tìm thấy trình phát nhạc nào đang hoạt động trong máy chủ!",
-        ephemeral: true,
-      });
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
@@ -50,8 +51,8 @@ export async function execute(interaction: Interaction): Promise<void> {
     if (!voiceChannel) {
       await interaction.reply({
         content: "⚠️ Anh Bo cần tham gia vào kênh thoại để điều khiển nhạc nha! 🌸",
-        ephemeral: true,
-      });
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
@@ -63,20 +64,24 @@ export async function execute(interaction: Interaction): Promise<void> {
           if (player.isPaused) {
             await interaction.reply({
               content: "⚠️ Bài hát hiện tại vốn đã tạm dừng rồi!",
-              ephemeral: true,
-            });
+              flags: MessageFlags.Ephemeral,
+            }).catch(() => {});
             return;
           }
 
+          // Acknowledge interaction ngay lập tức để tránh lỗi Unknown interaction (10062)
+          await interaction.deferUpdate().catch(() => {});
           player.pause();
-          await interaction.update({
+
+          await interaction.editReply({
             embeds: [buildPlayerEmbed(player)],
             components: buildPlayerActionRows(player),
-          });
+          }).catch(() => {});
+
           await interaction.followUp({
             content: "⏸️ Đã tạm dừng bài hát hiện tại. 🦊",
-            ephemeral: true,
-          });
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
           break;
         }
 
@@ -84,49 +89,55 @@ export async function execute(interaction: Interaction): Promise<void> {
           if (!player.isPaused) {
             await interaction.reply({
               content: "⚠️ Bài hát đang phát bình thường, không bị tạm dừng!",
-              ephemeral: true,
-            });
+              flags: MessageFlags.Ephemeral,
+            }).catch(() => {});
             return;
           }
 
+          await interaction.deferUpdate().catch(() => {});
           player.resume();
-          await interaction.update({
+
+          await interaction.editReply({
             embeds: [buildPlayerEmbed(player)],
             components: buildPlayerActionRows(player),
-          });
+          }).catch(() => {});
+
           await interaction.followUp({
             content: "▶️ Đã tiếp tục phát nhạc rồi nhé Anh Bo! ✨",
-            ephemeral: true,
-          });
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
           break;
         }
 
         case "player_skip": {
           const currentTrack = player.currentTrack;
+          await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
+
           const skipped = await player.skip();
           if (skipped) {
-            await interaction.reply({
+            await interaction.editReply({
               content: `⏭️ Đã bỏ qua bài hát: **${currentTrack?.title || "Không rõ"}**! 🌸`,
-            });
+            }).catch(() => {});
           } else {
-            await interaction.reply({
+            await interaction.editReply({
               content: "⚠️ Không thể bỏ qua bài hát hoặc danh sách phát đã hết!",
-              ephemeral: true,
-            });
+            }).catch(() => {});
           }
           break;
         }
 
         case "player_stop": {
+          await interaction.deferUpdate().catch(() => {});
+
           player.stop();
           player.queue.clear();
-          await player.disconnect();
+          await player.disconnect().catch(() => {});
 
-          await interaction.update({
+          await interaction.editReply({
             content: "⏹️ **Đã dừng phát nhạc, dọn dẹp hàng đợi và rời khỏi kênh thoại.** Hẹn gặp lại Anh Bo OniChan! 🌸🦊",
             embeds: [],
             components: [],
-          });
+          }).catch(() => {});
           break;
         }
 
@@ -138,8 +149,8 @@ export async function execute(interaction: Interaction): Promise<void> {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           content: "Đã xảy ra sự cố khi điều khiển nút bấm!",
-          ephemeral: true,
-        });
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
       }
     }
     return;
@@ -151,8 +162,8 @@ export async function execute(interaction: Interaction): Promise<void> {
     if (cooldown.onCooldown) {
       await interaction.reply({
         content: `⏳ Anh Bo vui lòng đợi **${cooldown.remainingSeconds} giây** trước khi thao tác tiếp nha 🌸`,
-        ephemeral: true,
-      });
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
@@ -160,8 +171,8 @@ export async function execute(interaction: Interaction): Promise<void> {
     if (!player) {
       await interaction.reply({
         content: "❌ Trình phát nhạc không còn tồn tại!",
-        ephemeral: true,
-      });
+        flags: MessageFlags.Ephemeral,
+      }).catch(() => {});
       return;
     }
 
@@ -178,10 +189,13 @@ export async function execute(interaction: Interaction): Promise<void> {
         const queueEmbed = buildQueueEmbed(player);
         await interaction.reply({
           embeds: [queueEmbed],
-          ephemeral: true,
-        });
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
         return;
       }
+
+      // Các tác vụ cập nhật giao diện (Loop, Volume, EQ) đều deferUpdate ngay lập tức để tránh lỗi timeout 3 giây
+      await interaction.deferUpdate().catch(() => {});
 
       // 2.2 Bật/Tắt lặp lại bài hát (Loop)
       if (selectedValue === "menu_loop") {
@@ -189,10 +203,10 @@ export async function execute(interaction: Interaction): Promise<void> {
         const newMode = currentMode === "off" ? "track" : "off";
         player.loop(newMode);
 
-        await interaction.update({
+        await interaction.editReply({
           embeds: [buildPlayerEmbed(player)],
           components: buildPlayerActionRows(player),
-        });
+        }).catch(() => {});
 
         const statusMsg = newMode === "track"
           ? "🔂 Đã **BẬT** chế độ lặp lại bài hát hiện tại! (Loop: Track)"
@@ -200,27 +214,26 @@ export async function execute(interaction: Interaction): Promise<void> {
 
         await interaction.followUp({
           content: `${statusMsg} 🌸✨`,
-          ephemeral: true,
-        });
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
         return;
       }
 
       // 2.3 Chỉnh âm lượng chuẩn (Khóa trần tối đa 100, chống rè vỡ tiếng)
       if (selectedValue.startsWith("menu_vol_")) {
         const rawVol = parseInt(selectedValue.replace("menu_vol_", ""), 10);
-        // Khóa trần cứng tối đa 100 và tối thiểu 0, mặc định an toàn 80
         const volLevel = Math.max(0, Math.min(100, isNaN(rawVol) ? 80 : rawVol));
         player.setVolume(volLevel);
 
-        await interaction.update({
+        await interaction.editReply({
           embeds: [buildPlayerEmbed(player)],
           components: buildPlayerActionRows(player),
-        });
+        }).catch(() => {});
 
         await interaction.followUp({
           content: `🔊 Đã điều chỉnh âm lượng về mức chuẩn: **${volLevel}%** (đã khóa trần tối đa 100% chống rè/vỡ tiếng)! 🎶`,
-          ephemeral: true,
-        });
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
         return;
       }
 
@@ -232,15 +245,15 @@ export async function execute(interaction: Interaction): Promise<void> {
           // Tắt toàn bộ filter/EQ, dọn dẹp FFmpeg để phát inline Opus nguyên bản
           await player.filter.clearAll();
 
-          await interaction.update({
+          await interaction.editReply({
             embeds: [buildPlayerEmbed(player)],
             components: buildPlayerActionRows(player),
-          });
+          }).catch(() => {});
 
           await interaction.followUp({
             content: "⚪ **Đã tắt toàn bộ bộ lọc EQ!** Trình phát đã quay lại chế độ âm thanh gốc **Inline Opus** sạch sẽ, trong trẻo và không qua FFmpeg. ✨🌸",
-            ephemeral: true,
-          });
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
           return;
         }
 
@@ -248,21 +261,21 @@ export async function execute(interaction: Interaction): Promise<void> {
         await player.filter.clearAll();
         const applied = await player.filter.applyFilter(filterName);
 
-        await interaction.update({
+        await interaction.editReply({
           embeds: [buildPlayerEmbed(player)],
           components: buildPlayerActionRows(player),
-        });
+        }).catch(() => {});
 
         if (applied) {
           await interaction.followUp({
             content: `🎛️ Đã kích hoạt bộ lọc FFmpeg EQ: **${filterName.toUpperCase()}** thành công! 🎶🦊`,
-            ephemeral: true,
-          });
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
         } else {
           await interaction.followUp({
             content: `⚠️ Không thể kích hoạt bộ lọc EQ **${filterName}**, tiếp tục phát âm thanh nguyên bản.`,
-            ephemeral: true,
-          });
+            flags: MessageFlags.Ephemeral,
+          }).catch(() => {});
         }
         return;
       }
@@ -271,8 +284,8 @@ export async function execute(interaction: Interaction): Promise<void> {
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
           content: "⚠️ Đã xảy ra lỗi khi thực thi lựa chọn trong Menu!",
-          ephemeral: true,
-        });
+          flags: MessageFlags.Ephemeral,
+        }).catch(() => {});
       }
     }
   }
