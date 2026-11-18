@@ -1,280 +1,275 @@
 import {
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
   StringSelectMenuBuilder,
-  StringSelectMenuOptionBuilder
+  StringSelectMenuOptionBuilder,
 } from "discord.js";
-import type { Track } from "ziplayer";
-import { CONFIG } from "../config";
-
-export type EqPresetKey = "flat" | "clear" | "vocal" | "softbass";
-
-export interface EqPresetConfig {
-  key: EqPresetKey;
-  label: string;
-  shortName: string;
-  description: string;
-  volume: number;
-  bands: { band: number; gain: number }[];
-}
-
-// Bộ EQ 3 dải tần tối ưu CPU thấp, khắc phục tiếng đục/hỗn tạp trên nhạc remix
-export const EQ_PRESETS: Record<EqPresetKey, EqPresetConfig> = {
-  flat: {
-    key: "flat",
-    label: "EQ: Mặc định (Normal)",
-    shortName: "Mặc định",
-    description: "Âm thanh nguyên bản, tiết kiệm CPU tối đa",
-    volume: 100,
-    bands: []
-  },
-  clear: {
-    key: "clear",
-    label: "EQ: Trong trẻo (Clear - Giảm đục)",
-    shortName: "Trong trẻo",
-    description: "Giảm bass ù/đục, tách bạch giọng hát và nhạc nền",
-    volume: 92,
-    bands: [
-      { band: 1, gain: -0.15 },
-      { band: 2, gain: -0.12 },
-      { band: 10, gain: 0.1 }
-    ]
-  },
-  vocal: {
-    key: "vocal",
-    label: "EQ: Rõ giọng hát (Vocal)",
-    shortName: "Rõ giọng hát",
-    description: "Đẩy nhẹ dải trung giúp lời bài hát nổi rõ",
-    volume: 95,
-    bands: [
-      { band: 0, gain: -0.08 },
-      { band: 6, gain: 0.12 },
-      { band: 8, gain: 0.12 }
-    ]
-  },
-  softbass: {
-    key: "softbass",
-    label: "EQ: Bass êm (Chống vỡ tiếng)",
-    shortName: "Bass êm",
-    description: "Tăng nhẹ âm trầm gọn gàng, hạn chế rè loa",
-    volume: 90,
-    bands: [
-      { band: 0, gain: 0.12 },
-      { band: 1, gain: 0.08 },
-      { band: 3, gain: -0.08 }
-    ]
-  }
-};
-
-export function buildBotInviteUrl(clientId?: string): string {
-  const id = clientId || process.env.CLIENT_ID || "1571494188527124510";
-  return `https://discord.com/oauth2/authorize?client_id=${id}&permissions=3147776&scope=bot%20applications.commands`;
-}
+import type { Player, Track } from "ziplayer";
+import { config } from "../config.js";
 
 /**
- * Format milliseconds or duration value into MM:SS or HH:MM:SS format
+ * Định dạng thời gian từ mili-giây sang mm:ss hoặc hh:mm:ss
  */
-export function formatDuration(duration: number | string | undefined, isLive?: boolean): string {
-  if (isLive || !duration) return "Live";
-  if (typeof duration === "string") return duration;
-
-  const totalSeconds = Math.floor(duration / 1000);
-  if (isNaN(totalSeconds) || totalSeconds <= 0) return "Live";
-
+export function formatDuration(ms: number): string {
+  if (!ms || isNaN(ms) || ms < 0) return "00:00";
+  const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
 
+  const pad = (n: number) => n.toString().padStart(2, "0");
   if (hours > 0) {
-    return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+    return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
   }
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+  return `${pad(minutes)}:${pad(seconds)}`;
 }
 
 /**
- * Extract clean user ID from requestedBy property
+ * Tạo Embed giao diện phát nhạc chính Now Playing
  */
-export function extractRequestedById(requestedBy: any): string {
-  if (!requestedBy) return "Unknown";
-  if (typeof requestedBy === "string") return requestedBy;
-  if (typeof requestedBy === "object") {
-    return requestedBy.requestedBy || requestedBy.id || "Unknown";
-  }
-  return String(requestedBy);
-}
+export function buildPlayerEmbed(player: Player, track?: Track | null): EmbedBuilder {
+  const current = track || player.currentTrack;
 
-/**
- * Creates the Now Playing Embed
- */
-export function createNowPlayingEmbed(track: Track, botAvatarUrl?: string | null): EmbedBuilder {
-  const formattedDuration = formatDuration(track.duration, track.isLive);
-  const requestedById = extractRequestedById(track.requestedBy);
-  const sourceName = (track.source || "YOUTUBE").toUpperCase();
+  if (!current) {
+    return new EmbedBuilder()
+      .setColor(config.colors.info)
+      .setTitle("🎵 VOLT Music Player")
+      .setDescription("Hiện tại không có bài hát nào đang phát.")
+      .setFooter({ text: `Dùng lệnh ${config.prefix}play <tên bài hát> để bắt đầu phát nhạc nhé Anh Bo! ✨` });
+  }
+
+  const time = player.getTime();
+  const progressBar = player.getProgressBar() || "▬".repeat(15);
+  const activeFilters = player.filter.getActiveFilters();
+  const activeEq = activeFilters.length > 0 ? activeFilters.map((f) => f.description || f.name).join(", ") : "Tắt (Normal / Inline Opus)";
+  const loopMode = player.queue.getLoopMode() || "off";
+
+  const loopBadge = loopMode === "track" ? "🔂 Bật (Lặp 1 bài)" : loopMode === "queue" ? "🔁 Bật (Lặp danh sách)" : "❌ Tắt";
+  const stateBadge = player.isPaused ? "⏸️ Đang tạm dừng" : "▶️ Đang phát";
+  const safeVolume = Math.min(100, Math.max(0, typeof player.volume === "number" ? player.volume : 80));
 
   const embed = new EmbedBuilder()
-    .setColor(CONFIG.EMBED_COLOR)
-    .setTitle("⚡ VOLT MUSIC - ĐANG PHÁT")
-    .setDescription(`🎶 **[${track.title}](${track.url})**`)
+    .setColor(config.colors.primary)
+    .setAuthor({
+      name: `Đang phát nhạc - VOLT Music (Prefix: ${config.prefix})`,
+      iconURL: "https://cdn.discordapp.com/emojis/853635082594615316.webp?size=96&quality=lossless",
+    })
+    .setTitle(current.title.slice(0, 256))
+    .setURL(current.url || "https://discord.com")
+    .setDescription(
+      `**Nghệ sĩ:** \`${current.author || "Không xác định"}\`\n` +
+      `**Trạng thái:** ${stateBadge} | **Âm lượng:** \`${safeVolume}%\` (Mặc định: 80%)\n` +
+      `**Bộ lọc EQ:** \`${activeEq}\` | **Lặp lại (Loop):** \`${loopBadge}\`\n\n` +
+      `\`${time.formatted.current || "00:00"}\` ${progressBar} \`${formatDuration(current.duration)}\``
+    )
     .addFields(
       {
-        name: "⏱️ Thời lượng",
-        value: formattedDuration,
-        inline: true
+        name: "📥 Yêu cầu bởi",
+        value: current.requestedBy ? `<@${current.requestedBy}>` : "Hệ thống",
+        inline: true,
       },
       {
-        name: "👤 Yêu cầu bởi",
-        value: `<@${requestedById}>`,
-        inline: true
+        name: "📑 Hàng đợi",
+        value: `\`${player.queue.size}\` bài hát còn lại`,
+        inline: true,
       },
       {
-        name: "🔊 Nguồn phát",
-        value: sourceName,
-        inline: true
+        name: "🌐 Nguồn phát",
+        value: `\`${current.source || "Web"}\``,
+        inline: true,
       }
     )
     .setFooter({
-      text: "VOLT Music • Anti-Spam 5s • Low-CPU Smooth Mode",
-      iconURL: botAvatarUrl || undefined
+      text: `VOLT Music • Dùng 4 nút bên dưới hoặc Menu Dropdown mở rộng 🦊🌸`,
     })
     .setTimestamp();
 
-  if (track.thumbnail && track.thumbnail.startsWith("http")) {
-    embed.setThumbnail(track.thumbnail);
+  if (current.thumbnail) {
+    embed.setThumbnail(current.thumbnail);
   }
 
   return embed;
 }
 
 /**
- * Creates Action Row 1 - Playback Buttons
+ * Xây dựng giao diện điều khiển:
+ * 1. Nút bấm trực tiếp: Pause, Resume, Skip, Stop
+ * 2. Menu Dropdown: Queue, Bật/Tắt Loop, Âm lượng 100%, 6 chế độ EQ
  */
-export function createPlaybackButtonsRow(): ActionRowBuilder<ButtonBuilder> {
+export function buildPlayerActionRows(player: Player): ActionRowBuilder<ButtonBuilder | StringSelectMenuBuilder>[] {
+  const isPaused = player.isPaused;
+
+  // Hàng 1: 4 nút bấm điều khiển trực tiếp
   const pauseButton = new ButtonBuilder()
-    .setCustomId("volt_pause")
-    .setLabel("Pause")
+    .setCustomId("player_pause")
+    .setLabel("Tạm dừng")
+    .setStyle(ButtonStyle.Primary)
     .setEmoji("⏸️")
-    .setStyle(ButtonStyle.Secondary);
+    .setDisabled(isPaused);
 
   const resumeButton = new ButtonBuilder()
-    .setCustomId("volt_resume")
-    .setLabel("Resume")
+    .setCustomId("player_resume")
+    .setLabel("Tiếp tục")
+    .setStyle(ButtonStyle.Success)
     .setEmoji("▶️")
-    .setStyle(ButtonStyle.Success);
+    .setDisabled(!isPaused);
 
   const skipButton = new ButtonBuilder()
-    .setCustomId("volt_skip")
-    .setLabel("Skip")
-    .setEmoji("⏭️")
-    .setStyle(ButtonStyle.Primary);
+    .setCustomId("player_skip")
+    .setLabel("Bỏ qua")
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji("⏭️");
 
   const stopButton = new ButtonBuilder()
-    .setCustomId("volt_stop")
-    .setLabel("Stop")
-    .setEmoji("⏹️")
-    .setStyle(ButtonStyle.Danger);
+    .setCustomId("player_stop")
+    .setLabel("Dừng")
+    .setStyle(ButtonStyle.Danger)
+    .setEmoji("⏹️");
 
-  return new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const buttonRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     pauseButton,
     resumeButton,
     skipButton,
     stopButton
   );
-}
 
-/**
- * Creates Action Row 2 - Control & EQ Dropdown
- */
-export function createControlDropdownRow(): ActionRowBuilder<StringSelectMenuBuilder> {
-  const menu = new StringSelectMenuBuilder()
-    .setCustomId("volt_control_menu")
-    .setPlaceholder("⚡ | Chọn chức năng điều khiển & chỉnh EQ...")
+  // Hàng 2: Menu Dropdown (Queue, Bật/Tắt Loop, Âm lượng <= 100%, 6 chế độ EQ & Tắt EQ)
+  const loopMode = player.queue.getLoopMode() || "off";
+  const activeFilters = player.filter.getActiveFilters();
+  const activeFilterName = activeFilters[0]?.name || "off";
+
+  const dropdownMenu = new StringSelectMenuBuilder()
+    .setCustomId("player_dropdown_menu")
+    .setPlaceholder("🎛️ Bảng điều khiển (Queue, Loop, Âm lượng <=100%, EQ)...")
     .addOptions(
+      // 1. Xem danh sách phát (Queue)
       new StringSelectMenuOptionBuilder()
-        .setLabel(EQ_PRESETS.flat.label)
-        .setDescription(EQ_PRESETS.flat.description)
-        .setValue("eq_flat")
-        .setEmoji("🎵"),
+        .setLabel("Xem danh sách phát (Queue)")
+        .setValue("menu_queue")
+        .setDescription("Hiển thị danh sách các bài hát trong hàng đợi")
+        .setEmoji("📜"),
+
+      // 2. Bật/Tắt Lặp lại bài hát (Loop)
       new StringSelectMenuOptionBuilder()
-        .setLabel(EQ_PRESETS.clear.label)
-        .setDescription(EQ_PRESETS.clear.description)
-        .setValue("eq_clear")
-        .setEmoji("✨"),
+        .setLabel(loopMode === "track" ? "Tắt lặp lại bài hát (Loop: Off)" : "Bật lặp lại bài hát (Loop: Track)")
+        .setValue("menu_loop")
+        .setDescription(loopMode === "track" ? "Đang bật lặp lại -> Nhấn để TẮT" : "Đang tắt lặp lại -> Nhấn để BẬT")
+        .setEmoji("🔂"),
+
+      // 3. Âm lượng chuẩn (Khóa trần tối đa 100% chống rè/vỡ tiếng, mặc định 80%)
       new StringSelectMenuOptionBuilder()
-        .setLabel(EQ_PRESETS.vocal.label)
-        .setDescription(EQ_PRESETS.vocal.description)
-        .setValue("eq_vocal")
-        .setEmoji("🎤"),
-      new StringSelectMenuOptionBuilder()
-        .setLabel(EQ_PRESETS.softbass.label)
-        .setDescription(EQ_PRESETS.softbass.description)
-        .setValue("eq_softbass")
+        .setLabel("Âm lượng: 100% (Tối đa trần - Chống rè)")
+        .setValue("menu_vol_100")
+        .setDescription("Khóa trần 100%, không vượt quá để tránh vỡ tiếng")
         .setEmoji("🔊"),
       new StringSelectMenuOptionBuilder()
-        .setLabel("Trộn danh sách phát (Shuffle)")
-        .setDescription("Xáo trộn ngẫu nhiên tất cả bài hát")
-        .setValue("shuffle")
-        .setEmoji("🔀"),
+        .setLabel("Âm lượng: 80% (Mặc định chuẩn - Khuyên dùng)")
+        .setValue("menu_vol_80")
+        .setDescription("Mức âm lượng tối ưu trong trẻo, không bị méo tiếng")
+        .setEmoji("🔉"),
       new StringSelectMenuOptionBuilder()
-        .setLabel("Lặp lại 1 bài (Loop Track)")
-        .setDescription("Lặp đi lặp lại duy nhất bài hát đang phát")
-        .setValue("loop_track")
-        .setEmoji("🔂"),
+        .setLabel("Âm lượng: 60% (Vừa vặn)")
+        .setValue("menu_vol_60")
+        .setDescription("Thiết lập âm lượng 60% vừa phải")
+        .setEmoji("🔉"),
       new StringSelectMenuOptionBuilder()
-        .setLabel("Lặp lại hàng chờ (Loop Queue)")
-        .setDescription("Lặp lại toàn bộ danh sách phát")
-        .setValue("loop_queue")
-        .setEmoji("🔁"),
+        .setLabel("Âm lượng: 40% (Êm dịu)")
+        .setValue("menu_vol_40")
+        .setDescription("Thiết lập âm lượng 40% êm ái")
+        .setEmoji("🔈"),
+
+      // 4. Các chế độ EQ (Mặc định TẮT toàn bộ để phát inline Opus nguyên bản không qua FFmpeg)
       new StringSelectMenuOptionBuilder()
-        .setLabel("Tắt chế độ lặp lại (Loop Off)")
-        .setDescription("Tắt mọi chế độ lặp lại")
-        .setValue("loop_off")
-        .setEmoji("➡️"),
+        .setLabel("Tắt EQ (Normal / Flat)")
+        .setValue("eq_off")
+        .setDescription("Mặc định: Âm thanh gốc inline Opus trong trẻo, không qua FFmpeg")
+        .setEmoji("⚪")
+        .setDefault(activeFilterName === "off"),
       new StringSelectMenuOptionBuilder()
-        .setLabel("Bật/Tắt Tự động phát (AutoPlay)")
-        .setDescription("Tự động tìm kiếm và phát bài tương tự")
-        .setValue("autoplay")
-        .setEmoji("🎛️")
+        .setLabel("EQ: Bass Boost")
+        .setValue("eq_bassboost")
+        .setDescription("Tăng cường dải âm trầm mạnh mẽ bùng nổ")
+        .setEmoji("🔊")
+        .setDefault(activeFilterName === "bassboost"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("EQ: Nightcore")
+        .setValue("eq_nightcore")
+        .setDescription("Tăng tốc độ và cao độ sôi động vui tươi")
+        .setEmoji("⚡")
+        .setDefault(activeFilterName === "nightcore"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("EQ: Vaporwave")
+        .setValue("eq_vaporwave")
+        .setDescription("Giảm nhịp điệu phong cách chill hoài niệm")
+        .setEmoji("🌊")
+        .setDefault(activeFilterName === "vaporwave"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("EQ: Crystal Clear")
+        .setValue("eq_crystal")
+        .setDescription("Dải cao trong trẻo, sắc nét chi tiết dải treble")
+        .setEmoji("💎")
+        .setDefault(activeFilterName === "crystal"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("EQ: Lo-Fi")
+        .setValue("eq_lofi")
+        .setDescription("Âm thanh mộc mạc hoài niệm, thư giãn dịu nhẹ")
+        .setEmoji("☕")
+        .setDefault(activeFilterName === "lofi"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel("EQ: Karaoke")
+        .setValue("eq_karaoke")
+        .setDescription("Lọc dải tần vocal ca sĩ để hát theo bài hát")
+        .setEmoji("🎤")
+        .setDefault(activeFilterName === "karaoke")
     );
 
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(menu);
+  const menuRow = new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(dropdownMenu);
+
+  return [buttonRow, menuRow];
 }
 
 /**
- * Creates the Search Timeout Warning Embed
+ * Xây dựng Embed danh sách hàng đợi (Queue)
  */
-export function createSearchTimeoutEmbed(timeoutSeconds: number = 45): EmbedBuilder {
-  return new EmbedBuilder()
-    .setColor(CONFIG.WARNING_COLOR)
-    .setTitle(`⚠️ Quá thời gian tìm kiếm (${timeoutSeconds} giây)!`)
-    .setDescription(
-      "Máy chủ nguồn phản hồi chậm, vui lòng thử lại hoặc nhập tên bài hát ngắn gọn."
-    )
-    .setFooter({ text: "VOLT Music • Timeout Protection" })
-    .setTimestamp();
-}
+export function buildQueueEmbed(player: Player): EmbedBuilder {
+  const current = player.currentTrack;
+  const tracks = player.queue.tracksList || [];
+  const loopMode = player.queue.getLoopMode() || "off";
+  const loopBadge = loopMode === "track" ? "🔂 Lặp 1 bài" : loopMode === "queue" ? "🔁 Lặp danh sách" : "❌ Tắt";
+  const safeVolume = Math.min(100, Math.max(0, typeof player.volume === "number" ? player.volume : 80));
 
-/**
- * Creates a standard Error Embed
- */
-export function createErrorEmbed(message: string): EmbedBuilder {
-  return new EmbedBuilder()
-    .setColor(CONFIG.ERROR_COLOR)
-    .setTitle("❌ Đã xảy ra lỗi")
-    .setDescription(message)
-    .setFooter({ text: "VOLT Music" })
+  const embed = new EmbedBuilder()
+    .setColor(config.colors.primary)
+    .setTitle("📜 Danh Sách Hàng Đợi - VOLT Music")
+    .setFooter({
+      text: `Tổng số: ${tracks.length + (current ? 1 : 0)} bài • Lặp lại: ${loopBadge} • Âm lượng: ${safeVolume}% 🦊`,
+    })
     .setTimestamp();
-}
 
-/**
- * Creates a standard Info/Success Embed
- */
-export function createSuccessEmbed(title: string, description: string): EmbedBuilder {
-  return new EmbedBuilder()
-    .setColor(CONFIG.EMBED_COLOR)
-    .setTitle(title)
-    .setDescription(description)
-    .setFooter({ text: "VOLT Music" })
-    .setTimestamp();
+  if (current) {
+    embed.addFields({
+      name: "▶️ Đang phát:",
+      value: `[${current.title}](${current.url}) | \`${formatDuration(current.duration)}\` (Yêu cầu: <@${current.requestedBy}>)`,
+    });
+  }
+
+  if (tracks.length === 0) {
+    embed.setDescription(`Hàng đợi hiện tại đang trống. Hãy thêm bài hát mới bằng lệnh \`${config.prefix}play <tên bài>\` nhé Anh Bo!`);
+  } else {
+    const listLimit = 10;
+    const displayedTracks = tracks.slice(0, listLimit);
+    const trackLines = displayedTracks.map((t, idx) => {
+      return `\`${idx + 1}.\` [${t.title}](${t.url}) - \`${formatDuration(t.duration)}\` | <@${t.requestedBy}>`;
+    });
+
+    if (tracks.length > listLimit) {
+      trackLines.push(`*...và còn ${tracks.length - listLimit} bài hát nữa*`);
+    }
+
+    embed.setDescription(trackLines.join("\n"));
+  }
+
+  return embed;
 }

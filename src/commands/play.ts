@@ -1,323 +1,282 @@
-import { EmbedBuilder, type Message } from "discord.js";
-import type { Command } from "./types";
-import { CONFIG } from "../config";
-import { createErrorEmbed, createSearchTimeoutEmbed } from "../ui/playerUi";
+import {
+  EmbedBuilder,
+  GuildMember,
+  Message,
+  VoiceBasedChannel,
+} from "discord.js";
+import { getManager, getPlayer, type Track } from "ziplayer";
+import { checkCooldown, config } from "../config.js";
+import { clearLeaveTimer } from "../events/voiceStateUpdate.js";
+import { formatDuration } from "../ui/playerUi.js";
 
-const importEsm = new Function("specifier", "return import(specifier)") as <T = any>(
-  specifier: string
-) => Promise<T>;
+export const name = "play";
+export const aliases = ["p"];
+export const description = "Phát nhạc từ YouTube, SoundCloud, Spotify hoặc tìm kiếm theo từ khóa";
 
-const activeGuildLocks = new Set<string>();
+/**
+ * Chọn bài hát tối ưu nhất từ danh sách kết quả tìm kiếm:
+ * - Ưu tiên bản chính thức (Official Video, Official MV, Official Audio).
+ * - Chặn rơi nhầm sang YouTube Shorts (url /shorts/, hashtag #short, hoặc thời lượng <= 60s).
+ * - Chống rơi nhầm sang bản cover, parody, speed up, nightcore nếu người dùng không yêu cầu.
+ * - Hỗ trợ và ưu tiên phát các bài nhạc dài 10+ phút liên tục, không bị đứt gãy.
+ */
+function selectBestTrack(tracks: Track[], query: string): Track | null {
+  if (!tracks || tracks.length === 0) return null;
+  if (tracks.length === 1) return tracks[0];
 
-function isHeavyPlaylistUrl(rawInput: string): boolean {
-  const lower = rawInput.toLowerCase();
-  return (
-    lower.includes("open.spotify.com/playlist/") ||
-    lower.includes("open.spotify.com/album/") ||
-    lower.includes("youtube.com/playlist?list=")
-  );
-}
+  const lowerQuery = query.toLowerCase();
+  const queryTokens = lowerQuery.split(/\s+/).filter((t) => t.length > 0);
 
-function parseYouTubeInput(rawInput: string): {
-  cleanUrl: string;
-  videoId: string | null;
-} {
-  const cleaned = rawInput.replace(/^<|>$/g, "").trim();
-  const match = cleaned.match(
-    /(?:youtube\.com\/(?:watch\?v=|shorts\/|embed\/|live\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/
-  );
+  const wantsShort = lowerQuery.includes("short");
+  const wantsCover = lowerQuery.includes("cover");
+  const wantsRemix = lowerQuery.includes("remix");
 
-  if (match && !cleaned.includes("list=")) {
-    const videoId = match[1];
-    return {
-      cleanUrl: `https://www.youtube.com/watch?v=${videoId}`,
-      videoId
-    };
+  let bestTrack = tracks[0];
+  let highestScore = -Infinity;
+
+  for (const track of tracks) {
+    let score = 0;
+    const title = (track.title || "").toLowerCase();
+    const url = (track.url || "").toLowerCase();
+    const durationMs = track.duration || 0; // ms
+
+    // 1. Chống YouTube Shorts: /shorts/, #short hoặc thời lượng <= 60 giây
+    const isShort = url.includes("/shorts/") || title.includes("#short") || (durationMs > 0 && durationMs <= 60000);
+    if (isShort && !wantsShort) {
+      score -= 500;
+    }
+
+    // 2. Chống bản cover nhảm nếu người dùng không chủ đích tìm cover
+    const isCover = title.includes("cover");
+    if (isCover && !wantsCover) {
+      score -= 200;
+    }
+
+    // 3. Chống parody / reaction / speed up / nightcore nếu không có trong query
+    if (!lowerQuery.includes("parody") && title.includes("parody")) score -= 300;
+    if (!lowerQuery.includes("reaction") && title.includes("reaction")) score -= 300;
+    if (!lowerQuery.includes("speed up") && (title.includes("speed up") || title.includes("sped up"))) score -= 100;
+    if (!lowerQuery.includes("nightcore") && title.includes("nightcore")) score -= 100;
+    if (!wantsRemix && title.includes("remix")) score -= 50;
+
+    // 4. Ưu tiên bản chính thức (Official Music Video, Official MV, Official Audio, v.v.)
+    if (title.includes("official music video") || title.includes("official mv")) {
+      score += 150;
+    } else if (title.includes("official audio") || title.includes("official video") || title.includes("official")) {
+      score += 100;
+    } else if (title.includes("mv") || title.includes("audio")) {
+      score += 50;
+    }
+
+    // 5. Khớp từng từ khóa trong query của người dùng
+    for (const token of queryTokens) {
+      if (title.includes(token)) {
+        score += 30;
+      }
+    }
+
+    // 6. Hỗ trợ và ưu tiên nhạc dài (10+ phút liên tục >= 600,000ms)
+    if (durationMs >= 600000) {
+      if (
+        lowerQuery.includes("tiếng") ||
+        lowerQuery.includes("hour") ||
+        lowerQuery.includes("phút") ||
+        lowerQuery.includes("lofi") ||
+        lowerQuery.includes("chill") ||
+        lowerQuery.includes("relax") ||
+        lowerQuery.includes("mix") ||
+        lowerQuery.includes("tập trung") ||
+        lowerQuery.includes("ngủ ngon")
+      ) {
+        score += 120;
+      } else {
+        score += 25;
+      }
+    } else if (durationMs > 60000) {
+      score += 30;
+    }
+
+    if (score > highestScore) {
+      highestScore = score;
+      bestTrack = track;
+    }
   }
 
-  return { cleanUrl: cleaned, videoId: match ? match[1] : null };
+  return bestTrack;
 }
 
-function simplifySongTitle(title: string): string {
-  return title
-    .replace(/\([^)]*\)/g, " ")
-    .replace(/\[[^\]]*\]/g, " ")
-    .replace(/【[^】]*】/g, " ")
-    .replace(/「[^」]*」/g, " ")
-    .replace(/『[^』]*』/g, " ")
-    .replace(/\|.*$/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+export async function execute(message: Message, args: string[]): Promise<void> {
+  // 1. Kiểm tra chống spam lệnh 5 giây
+  const cooldownCheck = checkCooldown(message.author.id, "play");
+  if (cooldownCheck.onCooldown) {
+    await message.reply(
+      `⚠️ Anh Bo OniChan đợi một chút nhé! Vui lòng chờ **${cooldownCheck.remainingSeconds} giây** trước khi dùng lại lệnh 🌸`
+    );
+    return;
+  }
 
-async function resolveYouTubeMeta(videoId: string): Promise<{
-  title: string | null;
-  thumbnail: string;
-}> {
-  const fallbackThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  const member = message.member as GuildMember;
+  const voiceChannel = member?.voice?.channel as VoiceBasedChannel | null;
+
+  if (!voiceChannel) {
+    const errorEmbed = new EmbedBuilder()
+      .setColor(config.colors.warning)
+      .setTitle("❌ Chưa vào kênh thoại")
+      .setDescription(
+        `Anh Bo OniChan ơi, anh cần tham gia vào một kênh thoại trước khi gọi em phát nhạc nhé! 🦊🌸\nVí dụ: \`${config.prefix}play Có Chắc Yêu Là Đây\``
+      );
+    await message.reply({ embeds: [errorEmbed] });
+    return;
+  }
+
+  // Kiểm tra quyền của bot trong kênh thoại
+  const permissions = voiceChannel.permissionsFor(message.client.user!);
+  if (!permissions?.has("Connect") || !permissions?.has("Speak")) {
+    const permEmbed = new EmbedBuilder()
+      .setColor(config.colors.error)
+      .setTitle("🔒 Thiếu quyền truy cập")
+      .setDescription("Em không có đủ quyền **Kết nối (Connect)** hoặc **Nói (Speak)** trong kênh thoại này rồi!");
+    await message.reply({ embeds: [permEmbed] });
+    return;
+  }
+
+  let cleanQuery = args.join(" ").trim();
+  if (!cleanQuery) {
+    const usageEmbed = new EmbedBuilder()
+      .setColor(config.colors.warning)
+      .setTitle("💡 Cách dùng lệnh !play")
+      .setDescription(
+        `Anh Bo hãy nhập tên bài hát hoặc liên kết sau lệnh nhé!\n\n` +
+        `**Cú pháp:** \`${config.prefix}play <tên bài hát hoặc URL>\`\n` +
+        `**Ví dụ:** \`${config.prefix}play See Tình\``
+      );
+    await message.reply({ embeds: [usageEmbed] });
+    return;
+  }
+
+  // Loại bỏ bọc <url> nếu Discord tự động bọc liên kết
+  if (cleanQuery.startsWith("<") && cleanQuery.endsWith(">")) {
+    cleanQuery = cleanQuery.slice(1, -1).trim();
+  }
+  const isDirectUrl = /^https?:\/\//i.test(cleanQuery);
+
+  const loadingMsg = await message.reply("🔎 *Tiểu hồ ly đang tìm kiếm và giải mã nguồn nhạc, Anh Bo đợi chút xíu nhé...* ✨");
+
   try {
-    const targetUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const res = await fetch(
-      `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`,
-      { signal: AbortSignal.timeout(3500) }
-    );
-    if (!res.ok) {
-      return { title: null, thumbnail: fallbackThumbnail };
+    // 2. Sử dụng chuẩn singleton của ziplayer
+    const manager = getManager();
+    if (!manager) {
+      throw new Error("ZiPlayer Manager chưa được khởi tạo!");
     }
-    const data = (await res.json()) as { title?: string; thumbnail_url?: string };
-    return {
-      title: data.title?.trim() || null,
-      thumbnail: data.thumbnail_url?.trim() || fallbackThumbnail
-    };
-  } catch {
-    return { title: null, thumbnail: fallbackThumbnail };
-  }
-}
 
-export const playCommand: Command = {
-  name: "play",
-  aliases: ["p"],
-  description: "Ưu tiên phát nhạc từ YouTube, chống lặp và hỗ trợ đầy đủ SoundCloud/Spotify",
-  usage: "!play <link YouTube / tên bài hát>",
-  execute: async (message: Message, args: string[]): Promise<void> => {
-    const voiceChannel = message.member?.voice?.channel;
-    if (!voiceChannel) {
-      await message.reply({
-        embeds: [createErrorEmbed("Bạn cần tham gia một kênh thoại trước khi dùng lệnh phát nhạc!")]
+    const guildId = message.guildId!;
+    clearLeaveTimer(guildId);
+    let player = getPlayer(guildId);
+
+    if (!player) {
+      player = await manager.create(guildId, {
+        leaveOnEnd: true,
+        leaveOnEmpty: false,
+        volume: config.defaultVolume,
+        userdata: {
+          textChannelId: message.channelId,
+        },
       });
-      return;
+    } else {
+      player.userdata = player.userdata || {};
+      player.userdata.textChannelId = message.channelId;
     }
 
-    const rawQuery = args.join(" ").trim();
-    if (!rawQuery) {
-      await message.reply({
-        embeds: [
-          createErrorEmbed(
-            "Vui lòng dán link YouTube hoặc nhập tên bài hát!\nVí dụ: `!play https://youtu.be/tlDuuw2rkm4` hoặc `!play Đi Về Nhà`"
-          )
-        ]
-      });
-      return;
-    }
-
-    const isRender = Boolean(
-      CONFIG.IS_RENDER || process.env.RENDER || process.env.RENDER_SERVICE_ID
-    );
-
-    if (isRender && isHeavyPlaylistUrl(rawQuery)) {
-      await message.reply({
-        embeds: [
-          createErrorEmbed(
-            "Vui lòng gửi link **từng video lẻ** (kể cả video dài 20–60 phút) thay vì dán cả danh sách phát Playlist!"
-          )
-        ]
-      });
-      return;
-    }
-
-    const guildId = message.guildId;
-    if (!guildId) {
-      await message.reply({
-        embeds: [createErrorEmbed("Lệnh này chỉ có thể sử dụng trong máy chủ Discord!")]
-      });
-      return;
-    }
-
-    if (activeGuildLocks.has(guildId)) {
-      await message.reply({
-        embeds: [createErrorEmbed("Bot đang nạp bài hát trước đó, vui lòng chờ 2 giây!")]
-      });
-      return;
-    }
-
-    activeGuildLocks.add(guildId);
-
-    const { cleanUrl, videoId } = parseYouTubeInput(rawQuery);
-    const isAnyUrl = /^https?:\/\//i.test(cleanUrl);
-
-    // Gửi phản hồi ngay lập tức để người dùng luôn thấy bot nhận lệnh
-    const loadingMsg = await message.reply({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(CONFIG.EMBED_COLOR)
-          .setDescription(
-            videoId
-              ? "⚡ **Đang vào kênh thoại và tải luồng âm thanh trực tiếp từ YouTube...**"
-              : "⚡ **Đang vào kênh thoại và tìm kiếm bài hát...**"
-          )
-      ]
-    });
-
+    // 3. Kết nối an toàn vào kênh thoại nếu chưa kết nối hoặc sai kênh
     try {
-      const { getManager, getPlayer } = await importEsm<typeof import("ziplayer")>("ziplayer");
-      const manager = getManager();
-      if (!manager) {
-        await loadingMsg.edit({
-          embeds: [createErrorEmbed("Hệ thống âm thanh đang khởi động, thử lại sau 2 giây!")]
-        });
-        return;
+      const needsConnect =
+        !player.connection ||
+        (player as any).channel?.id !== voiceChannel.id ||
+        (player.connection as any)?.state?.status === "destroyed" ||
+        (player.connection as any)?.state?.status === "disconnected";
+
+      if (needsConnect) {
+        await player.connect(voiceChannel as any);
       }
+    } catch (connError) {
+      console.error("[Play Command] Lỗi kết nối kênh thoại:", connError);
+      const connErrEmbed = new EmbedBuilder()
+        .setColor(config.colors.error)
+        .setTitle("❌ Không thể kết nối kênh thoại")
+        .setDescription("Tiểu hồ ly không thể kết nối hoặc tham gia vào kênh thoại của Anh Bo. Vui lòng kiểm tra quyền và thử lại sau nhé! 🦊🌸");
+      await loadingMsg.edit({ content: null, embeds: [connErrEmbed] }).catch(() => {});
+      return;
+    }
 
-      let player = getPlayer(guildId);
-      if (!player) {
-        player = await manager.create(guildId, {
-          leaveOnEnd: true,
-          leaveOnEmpty: true,
-          volume: 100,
-          preload: {
-            enabled: false,
-            autoDisableInLowPerformance: true
-          },
-          antiStuck: {
-            enabled: false,
-            maxRetries: 0,
-            controlledSkipThreshold: 1
-          },
-          userdata: { channel: message.channel }
-        });
-      } else {
-        player.userdata = { ...(player.userdata || {}), channel: message.channel };
-      }
+    // 4. Phân luồng nguồn nhạc: URL trực tiếp vs Tên bài hát (text search)
+    let targetToPlay: any = cleanQuery;
+    let selectedTrack: Track | null = null;
 
-      const isConnectionReady =
-        Boolean(player.connection) &&
-        (player.connection?.state as any)?.status === "ready";
-
-      let connectionFailed: any = null;
-      const [, ytMeta] = await Promise.all([
-        !isConnectionReady
-          ? player.connect(voiceChannel as any).catch((err: any) => {
-              if (!err?.message?.includes("aborted")) {
-                connectionFailed = err;
-              }
-            })
-          : Promise.resolve(),
-        videoId ? resolveYouTubeMeta(videoId) : Promise.resolve(null)
-      ]);
-
-      if (connectionFailed) {
-        await loadingMsg.edit({
-          embeds: [
-            createErrorEmbed(
-              `Không thể kết nối vào kênh thoại: ${connectionFailed?.message || "Kiểm tra quyền của bot!"}`
-            )
-          ]
-        });
-        return;
-      }
-
-      if (!isConnectionReady) {
-        await new Promise((resolve) => setTimeout(resolve, 900));
-      }
-
-      const youtubeThumbnail = ytMeta?.thumbnail || null;
-      const youtubeTitle = ytMeta?.title || null;
-      const requestedById = message.author.id;
-
-      if (videoId && youtubeThumbnail) {
-        const currentData = (player.userdata || {}) as Record<string, any>;
-        const ytMetaQueue = Array.isArray(currentData.ytMetaQueue)
-          ? [...currentData.ytMetaQueue]
-          : [];
-        ytMetaQueue.push({
-          videoId,
-          url: cleanUrl,
-          title: youtubeTitle || "",
-          simpleTitle: youtubeTitle ? simplifySongTitle(youtubeTitle).toLowerCase() : "",
-          thumbnail: youtubeThumbnail
-        });
-        player.userdata = {
-          ...currentData,
-          channel: message.channel,
-          ytMetaQueue
-        };
-      }
-
-      const tryPlay = async (targetQuery: string, timeoutMs: number) => {
-        return Promise.race([
-          player!.play(targetQuery, requestedById),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("SEARCH_TIMEOUT")), timeoutMs)
-          )
-        ]);
-      };
-
-      let playedLabel = youtubeTitle || cleanUrl;
-      let result: any = null;
-
-      if (isAnyUrl) {
-        result = await tryPlay(cleanUrl, 25000);
-      } else {
-        let preferredQuery = cleanUrl;
-        if (typeof (manager as any).search === "function") {
-          const searchRes = await Promise.race([
-            (manager as any).search(cleanUrl),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000))
-          ]);
-          const tracks: any[] = Array.isArray(searchRes?.tracks) ? searchRes.tracks : [];
-          const ytTrack = tracks.find(
-            (t) =>
-              String(t?.source || "").toLowerCase() === "youtube" ||
-              /(?:youtube\.com|youtu\.be)/i.test(String(t?.url || ""))
-          );
-          const chosenTrack = ytTrack || tracks[0];
-          if (chosenTrack?.url) {
-            preferredQuery = chosenTrack.url;
-            if (chosenTrack.title) {
-              playedLabel = chosenTrack.title;
-            }
+    if (isDirectUrl) {
+      // Khi người dùng nhập link URL trực tiếp (bắt đầu bằng http:// hoặc https://):
+      // Giữ nguyên URL truyền thẳng vào player.play, không tự tìm kiếm lại.
+      targetToPlay = cleanQuery;
+    } else {
+      // Khi người dùng nhập tên bài (text search query):
+      // Đảm bảo ưu tiên kết quả YouTube video chính thức, chặn rơi nhầm sang Shorts / cover
+      try {
+        const searchResult = await player.search(cleanQuery, message.author.id);
+        if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
+          const bestTrack = selectBestTrack(searchResult.tracks, cleanQuery);
+          if (bestTrack) {
+            selectedTrack = bestTrack;
+            targetToPlay = bestTrack.url || bestTrack;
           }
         }
-        result = await tryPlay(preferredQuery, 20000);
+      } catch (searchError) {
+        console.warn("[Play Command] Không thể tiền lọc tìm kiếm, fallback sang query gốc:", searchError);
+        targetToPlay = cleanQuery;
       }
-
-      if (!result) {
-        await loadingMsg.edit({
-          embeds: [
-            createErrorEmbed(
-              videoId
-                ? `Không thể lấy luồng âm thanh từ video **${playedLabel}** (video có thể bị giới hạn độ tuổi hoặc vùng quốc gia).`
-                : "Không tìm thấy bài hát phù hợp. Hãy thử nhập tên bài hát rõ ràng hơn!"
-            )
-          ]
-        });
-        return;
-      }
-
-      (player as any).setVolume?.(100);
-      if (player.isPaused) {
-        await player.resume();
-      }
-
-      const acceptedEmbed = new EmbedBuilder()
-        .setColor(CONFIG.EMBED_COLOR)
-        .setTitle("⚡ VOLT MUSIC - ĐÃ TIẾP NHẬN")
-        .setDescription(`🎶 Đã nạp: **${playedLabel}**\nNhạc đang được phát ngay bây giờ!`)
-        .setFooter({ text: "VOLT Music • YouTube Priority Engine" })
-        .setTimestamp();
-
-      if (youtubeThumbnail) {
-        acceptedEmbed.setThumbnail(youtubeThumbnail);
-      }
-
-      await loadingMsg.edit({ embeds: [acceptedEmbed] });
-    } catch (err: any) {
-      if (err?.message === "SEARCH_TIMEOUT" || String(err).toLowerCase().includes("timeout")) {
-        await loadingMsg.edit({
-          embeds: [createSearchTimeoutEmbed(25)]
-        });
-      } else {
-        console.error("[Play Execution Error]:", err);
-        await loadingMsg.edit({
-          embeds: [
-            createErrorEmbed(
-              `Không thể phát bài hát này: ${err?.message || "Vui lòng thử lại sau giây lát!"}`
-            )
-          ]
-        });
-      }
-    } finally {
-      activeGuildLocks.delete(guildId);
     }
+
+    // 5. Phát nhạc hoặc thêm vào hàng đợi, kiểm tra kỹ trường hợp thất bại
+    const success = await player.play(targetToPlay, message.author.id);
+
+    if (!success) {
+      const notFoundEmbed = new EmbedBuilder()
+        .setColor(config.colors.error)
+        .setTitle("🔎 Không tìm thấy kết quả hoặc phát thất bại")
+        .setDescription(
+          `Tiểu hồ ly không tìm thấy bài hát hoặc giải mã thất bại với yêu cầu: \`${cleanQuery}\`.\n` +
+          `Anh Bo hãy kiểm tra lại đường link hoặc thử từ khóa khác nhé! ✨`
+        );
+      await loadingMsg.edit({ content: null, embeds: [notFoundEmbed] }).catch(() => {});
+      return;
+    }
+
+    const currentTrack = selectedTrack || player.currentTrack;
+    const isNowPlaying = player.queue.size === 0;
+
+    const successEmbed = new EmbedBuilder()
+      .setColor(config.colors.success)
+      .setAuthor({
+        name: isNowPlaying ? "Đang tải bài hát..." : "Đã thêm vào hàng đợi",
+        iconURL: "https://cdn.discordapp.com/emojis/853635082594615316.webp?size=96&quality=lossless",
+      })
+      .setDescription(
+        currentTrack
+          ? `🎶 **[${currentTrack.title}](${currentTrack.url})**\n⏱️ Thời lượng: \`${formatDuration(currentTrack.duration)}\` | Yêu cầu bởi: <@${message.author.id}>`
+          : `🎶 Đã thêm yêu cầu: \`${cleanQuery}\` vào danh sách chờ thành công!`
+      )
+      .setFooter({ text: `Vị trí trong hàng đợi: #${player.queue.size + 1} • Âm lượng: ${player.volume}% • Lệnh: !help` });
+
+    if (currentTrack?.thumbnail) {
+      successEmbed.setThumbnail(currentTrack.thumbnail);
+    }
+
+    await loadingMsg.edit({ content: null, embeds: [successEmbed] });
+  } catch (error) {
+    console.error("[Play Command] Lỗi khi xử lý phát nhạc:", error);
+    const failEmbed = new EmbedBuilder()
+      .setColor(config.colors.error)
+      .setTitle("⚠️ Đã xảy ra sự cố")
+      .setDescription("Có trục trặc khi kết nối hoặc giải mã âm thanh. Anh Bo OniChan vui lòng thử lại sau nhé! 🦊");
+    await loadingMsg.edit({ content: null, embeds: [failEmbed] }).catch(() => {});
   }
-};
+}
+

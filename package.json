@@ -1,43 +1,31 @@
 {
-  "name": "volt-music",
+  "name": "music-volt",
   "version": "1.0.0",
-  "description": "VOLT MUSIC - High performance Discord Music Bot optimized for Render 0.1 vCPU",
+  "description": "VOLT Music Bot built with ziplayer and discord.js",
+  "type": "module",
   "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "start": "node --no-warnings --experimental-require-module dist/index.js",
-    "dev": "tsx src/index.ts"
-  },
   "engines": {
     "node": ">=20.18.0"
   },
-  "keywords": [
-    "discord",
-    "music",
-    "bot",
-    "ziplayer",
-    "render",
-    "opus"
-  ],
-  "author": "VOLT TEAM",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "keywords": ["music", "discord", "bot", "ziplayer"],
+  "author": "",
   "license": "ISC",
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
-    "@snazzah/davey": "^0.1.2",
+    "@discordjs/voice": "^0.19.2",
+    "@types/node": "^22.13.10",
     "@ziplayer/plugin": "^1.0.2",
-    "canvas": "^3.2.3",
-    "discord.js": "^14.16.3",
+    "discord.js": "^14.18.0",
     "dotenv": "^16.4.5",
-    "express": "^4.21.1",
-    "ffmpeg-static": "^5.2.0",
-    "opusscript": "^0.0.8",
+    "ffmpeg-static": "^5.3.0",
+    "typescript": "^5.8.2",
     "ziplayer": "^1.0.4"
   },
   "devDependencies": {
-    "@types/express": "^5.0.0",
-    "@types/ffmpeg-static": "^3.0.3",
-    "@types/node": "^20.17.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.6.3"
+    "tsx": "^4.19.3"
   }
 }
