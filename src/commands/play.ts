@@ -5,13 +5,30 @@ import {
   VoiceBasedChannel,
 } from "discord.js";
 import { getManager, getPlayer, type Track } from "ziplayer";
-import { checkCooldown, config } from "../config.js";
+import { IS_RENDER, checkCooldown, config } from "../config.js";
 import { clearLeaveTimer } from "../events/voiceStateUpdate.js";
 import { formatDuration } from "../ui/playerUi.js";
 
 export const name = "play";
 export const aliases = ["p"];
 export const description = "Phát nhạc từ YouTube, SoundCloud, Spotify hoặc tìm kiếm theo từ khóa";
+
+/**
+ * Lấy tiêu đề video YouTube qua endpoint oEmbed (Google Datacenter-safe, không bị chặn IP 403)
+ */
+async function fetchYouTubeTitleViaOembed(url: string): Promise<string | null> {
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(oembedUrl, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { title?: string };
+    return typeof data?.title === "string" ? data.title.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Chọn bài hát tối ưu nhất từ danh sách kết quả tìm kiếm:
@@ -182,21 +199,31 @@ export async function execute(message: Message, args: string[]): Promise<void> {
           textChannelId: message.channelId,
         },
       });
+      // Tắt autoplay ngầm để tiết kiệm 0.1 vCPU và chống lỗi 403 từ endpoint /youtubei/v1/next
+      player.queue.autoPlay(false);
     } else {
       player.userdata = player.userdata || {};
       player.userdata.textChannelId = message.channelId;
+      player.queue.autoPlay(false);
     }
 
-    // 3. Kết nối an toàn vào kênh thoại nếu chưa kết nối hoặc sai kênh
+    // 3. Kết nối an toàn vào kênh thoại: nếu đã "ready" cùng kênh thì đi thẳng vào phát nhạc (không setTimeout)
     try {
-      const needsConnect =
-        !player.connection ||
-        (player as any).channel?.id !== voiceChannel.id ||
-        (player.connection as any)?.state?.status === "destroyed" ||
-        (player.connection as any)?.state?.status === "disconnected";
+      const isReadySameChannel =
+        (player.connection?.state as any)?.status === "ready" &&
+        (player as any).channel?.id === voiceChannel.id;
 
-      if (needsConnect) {
-        await player.connect(voiceChannel as any);
+      if (!isReadySameChannel) {
+        const needsConnect =
+          !player.connection ||
+          (player as any).channel?.id !== voiceChannel.id ||
+          (player.connection as any)?.state?.status === "destroyed" ||
+          (player.connection as any)?.state?.status === "disconnected";
+
+        if (needsConnect) {
+          await player.connect(voiceChannel as any);
+          player.queue.autoPlay(false);
+        }
       }
     } catch (connError) {
       console.error("[Play Command] Lỗi kết nối kênh thoại:", connError);
@@ -218,24 +245,109 @@ export async function execute(message: Message, args: string[]): Promise<void> {
       targetToPlay = cleanQuery;
     } else {
       // Khi người dùng nhập tên bài (text search query):
-      // Đảm bảo ưu tiên kết quả YouTube video chính thức, chặn rơi nhầm sang Shorts / cover
-      try {
-        const searchResult = await player.search(cleanQuery, message.author.id);
-        if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
-          const bestTrack = selectBestTrack(searchResult.tracks, cleanQuery);
-          if (bestTrack) {
-            selectedTrack = bestTrack;
-            targetToPlay = bestTrack.url || bestTrack;
+      // Nếu chạy trên Render: ưu tiên tìm kiếm qua SoundCloud trước để tránh 403 và lên nhạc siêu nhanh
+      if (IS_RENDER) {
+        try {
+          const scPlugin = ((manager as any).plugins as any[])?.find((p: any) => p.name === "soundcloud");
+          if (scPlugin) {
+            const scResult = await scPlugin.search(cleanQuery, message.author.id);
+            if (scResult && scResult.tracks && scResult.tracks.length > 0) {
+              const bestTrack = selectBestTrack(scResult.tracks, cleanQuery);
+              if (bestTrack) {
+                selectedTrack = bestTrack;
+                targetToPlay = bestTrack.url || bestTrack;
+              }
+            }
           }
+        } catch (scErr) {
+          console.warn("[Play Command] Tìm kiếm SoundCloud thất bại, fallback sang YouTube:", scErr);
         }
-      } catch (searchError) {
-        console.warn("[Play Command] Không thể tiền lọc tìm kiếm, fallback sang query gốc:", searchError);
-        targetToPlay = cleanQuery;
+      }
+
+      // Nếu không tìm thấy trên SoundCloud hoặc đang chạy trên máy cá nhân (!IS_RENDER):
+      // Đảm bảo ưu tiên kết quả YouTube video chính thức, chặn rơi nhầm sang Shorts / cover
+      if (!selectedTrack) {
+        try {
+          const searchResult = await player.search(cleanQuery, message.author.id);
+          if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
+            const bestTrack = selectBestTrack(searchResult.tracks, cleanQuery);
+            if (bestTrack) {
+              selectedTrack = bestTrack;
+              targetToPlay = bestTrack.url || bestTrack;
+            }
+          }
+        } catch (searchError) {
+          console.warn("[Play Command] Không thể tiền lọc tìm kiếm, fallback sang query gốc:", searchError);
+          targetToPlay = cleanQuery;
+        }
       }
     }
 
-    // 5. Phát nhạc hoặc thêm vào hàng đợi, kiểm tra kỹ trường hợp thất bại
-    const success = await player.play(targetToPlay, message.author.id);
+    // 5. Phát nhạc hoặc thêm vào hàng đợi, kiểm tra kỹ trường hợp thất bại và fallback SoundCloud
+    let success = false;
+    try {
+      success = await player.play(targetToPlay, message.author.id);
+    } catch (playErr) {
+      console.warn("[Play Command] Lỗi player.play ban đầu:", playErr);
+      success = false;
+    }
+
+    // Nếu chạy trên Render và dán link YouTube bị lỗi hoặc trả về false: fallback qua YouTube oEmbed -> SoundCloud
+    const isYouTubeUrl = isDirectUrl && (cleanQuery.includes("youtube.com") || cleanQuery.includes("youtu.be"));
+    if (!success && IS_RENDER && isYouTubeUrl) {
+      const fallbackKey = `fallbackHandled_${cleanQuery}`;
+      const isHandled = Boolean(
+        (player.userdata && player.userdata[fallbackKey]) ||
+        ((player as any).data && (player as any).data[fallbackKey])
+      );
+
+      if (!isHandled) {
+        if (!player.userdata) player.userdata = {};
+        player.userdata[fallbackKey] = true;
+        if (!(player as any).data) (player as any).data = {};
+        (player as any).data[fallbackKey] = true;
+
+        const oembedTitle = await fetchYouTubeTitleViaOembed(cleanQuery);
+        const searchTitle = oembedTitle || cleanQuery;
+
+        let scTrack: Track | null = null;
+        try {
+          const scPlugin = ((manager as any).plugins as any[])?.find((p: any) => p.name === "soundcloud");
+          if (scPlugin && searchTitle) {
+            const scResult = await scPlugin.search(searchTitle, message.author.id);
+            if (scResult && scResult.tracks && scResult.tracks.length > 0) {
+              const bestSc = selectBestTrack(scResult.tracks, searchTitle) || scResult.tracks[0];
+              if (bestSc) {
+                scTrack = bestSc;
+              }
+            }
+          }
+        } catch (scSearchErr) {
+          console.warn("[Play Command] Fallback SoundCloud search thất bại:", scSearchErr);
+        }
+
+        if (scTrack) {
+          try {
+            success = await player.play(scTrack.url || scTrack, message.author.id);
+            if (success) {
+              selectedTrack = scTrack;
+            }
+          } catch (scPlayErr) {
+            console.warn("[Play Command] Fallback SoundCloud play thất bại:", scPlayErr);
+          }
+        } else if (searchTitle) {
+          try {
+            success = await player.play(`soundcloud:${searchTitle}`, message.author.id);
+          } catch {}
+        }
+
+        if (success && message.channel && "send" in message.channel) {
+          await (message.channel as any).send(
+            `🔄 Nhận diện dải IP Render bị giới hạn, tiểu hồ ly đã tự động chuyển nguồn âm thanh "${searchTitle}" sang SoundCloud mượt mà cho Anh Bo rồi nhé! 🌸✨`
+          ).catch(() => {});
+        }
+      }
+    }
 
     if (!success) {
       const notFoundEmbed = new EmbedBuilder()

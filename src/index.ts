@@ -1,30 +1,58 @@
 import fs from "node:fs";
 import ffmpegPath from "ffmpeg-static";
+import { IS_RENDER } from "./config.js";
 
 // =========================================================================
 // [QUAN TRỌNG NHẤT - CHỐNG LỖI RENDER 403 FORBIDDEN & TIMEOUT]
 // Override globalThis.fetch TRƯỚC KHI khởi tạo PlayerManager:
-// Chuyển hướng các request Innertube từ www.youtube.com/youtubei/v1/
+// Chuyển hướng các request Innertube từ www.youtube.com/youtubei/
 // sang youtubei.googleapis.com và đặt User-Agent ứng dụng YouTube Android/iOS.
 // Đây là cơ chế bắt buộc để giải mã luồng nhạc mà không bị YouTube chặn IP datacenter Render.
 // =========================================================================
 const originalFetch = globalThis.fetch;
 
 globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  let url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  // Bắt buộc xử lý cả 3 kiểu đầu vào của fetch: string, URL, Request
+  let url: string;
+  if (typeof input === "string") {
+    url = input;
+  } else if (input instanceof URL) {
+    url = input.toString();
+  } else if (typeof input === "object" && input !== null && "url" in input) {
+    url = (input as Request).url;
+  } else {
+    url = String(input);
+  }
 
   // 1. Chuyển hướng URL Innertube sang youtubei.googleapis.com
   let modifiedUrl = url;
-  if (url.includes("www.youtube.com/youtubei/v1/")) {
-    modifiedUrl = url.replace("www.youtube.com/youtubei/v1/", "youtubei.googleapis.com/youtubei/v1/");
-  } else if (url.includes("youtube.com/youtubei/v1/")) {
-    modifiedUrl = url.replace("youtube.com/youtubei/v1/", "youtubei.googleapis.com/youtubei/v1/");
+  if (modifiedUrl.includes("www.youtube.com/youtubei/")) {
+    modifiedUrl = modifiedUrl.replace("www.youtube.com/youtubei/", "youtubei.googleapis.com/youtubei/");
+  } else if (modifiedUrl.includes("music.youtube.com/youtubei/")) {
+    modifiedUrl = modifiedUrl.replace("music.youtube.com/youtubei/", "youtubei.googleapis.com/youtubei/");
+  } else if (modifiedUrl.includes("youtube.com/youtubei/")) {
+    modifiedUrl = modifiedUrl.replace("youtube.com/youtubei/", "youtubei.googleapis.com/youtubei/");
   }
 
-  // 2. Thiết lập User-Agent và headers của ứng dụng YouTube Android chính thức
-  const headers = new Headers(
-    init?.headers || (typeof input === "object" && "headers" in input ? (input as any).headers : {})
-  );
+  // 2. Thiết lập Headers: clone từ input (nếu là Request), xóa host cũ, gộp init.headers
+  const headers = new Headers();
+
+  if (typeof input === "object" && input !== null && "headers" in input && (input as any).headers) {
+    const inputHeaders = new Headers((input as any).headers);
+    inputHeaders.forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+
+  if (init?.headers) {
+    const initHeaders = new Headers(init.headers);
+    initHeaders.forEach((value, key) => {
+      headers.set(key, value);
+    });
+  }
+
+  // Xóa header host cũ để tránh bị từ chối kết nối khi chuyển hướng sang youtubei.googleapis.com
+  headers.delete("host");
 
   const currentUserAgent = headers.get("User-Agent");
   if (!currentUserAgent || currentUserAgent.includes("Node") || currentUserAgent.includes("undici") || currentUserAgent.includes("node-fetch")) {
@@ -40,16 +68,21 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     }
   }
 
-  // 3. Chỉ gắn timeout 12s (AbortSignal.timeout(12000)) cho request tìm kiếm/metadata (URL chứa /search hoặc /next hoặc /browse),
-  // tuyệt đối KHÔNG áp timeout lên stream audio dài.
-  const isSearchOrMetadata =
+  // 3. Timeout: Trên Render hạ xuống 4500ms để fail fast; giữ 12000ms khi !IS_RENDER
+  // Tuyệt đối KHÔNG áp timeout lên stream audio dài.
+  const isStreamAudio = modifiedUrl.includes("videoplayback") || modifiedUrl.includes("googlevideo.com");
+  const isSearchOrMetadata = !isStreamAudio && (
     modifiedUrl.includes("/search") ||
     modifiedUrl.includes("/next") ||
-    modifiedUrl.includes("/browse");
+    modifiedUrl.includes("/browse") ||
+    modifiedUrl.includes("youtubei.googleapis.com")
+  );
+
+  const timeoutMs = IS_RENDER ? 4500 : 12000;
 
   let signal = init?.signal;
   if (isSearchOrMetadata) {
-    const timeoutSignal = AbortSignal.timeout(12000);
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     if (signal) {
       if ("any" in AbortSignal && typeof (AbortSignal as any).any === "function") {
         signal = (AbortSignal as any).any([signal, timeoutSignal]);
@@ -67,10 +100,19 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     signal,
   };
 
+  // Bảo toàn method và body nếu input ban đầu là Request
+  if (!modifiedInit.method && typeof input === "object" && input !== null && "method" in input) {
+    modifiedInit.method = (input as Request).method;
+  }
+  if (modifiedInit.body === undefined && typeof input === "object" && input !== null && "body" in input && (input as any).body) {
+    modifiedInit.body = (input as any).body;
+    (modifiedInit as any).duplex = "half";
+  }
+
   return originalFetch(modifiedUrl, modifiedInit);
 };
 
-console.log("[RenderBypass] Đã kích hoạt override globalThis.fetch chuyển hướng Innertube sang youtubei.googleapis.com (timeout 12s cho search/metadata)");
+console.log(`[RenderBypass] Đã kích hoạt override globalThis.fetch chuyển hướng Innertube sang youtubei.googleapis.com (IS_RENDER=${IS_RENDER}, timeout ${IS_RENDER ? 4500 : 12000}ms cho search/metadata)`);
 
 import {
   ActivityType,
@@ -190,14 +232,22 @@ const youtubePlugin = new YouTubePlugin({
   },
 } as any);
 
+const managerPlugins = IS_RENDER
+  ? [
+      youtubePlugin, // YouTubePlugin ưu tiên hàng đầu
+      new SoundCloudPlugin(),
+      new SpotifyPlugin(),
+    ]
+  : [
+      youtubePlugin,
+      new SoundCloudPlugin(),
+      new SpotifyPlugin(),
+      new TTSPlugin({ defaultLang: "vi" }),
+      new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), // 25MB
+    ];
+
 const manager = new PlayerManager({
-  plugins: [
-    youtubePlugin, // YouTubePlugin ưu tiên hàng đầu trước SoundCloud và Spotify
-    new SoundCloudPlugin(),
-    new SpotifyPlugin(),
-    new TTSPlugin({ defaultLang: "vi" }),
-    new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), // 25MB
-  ],
+  plugins: managerPlugins,
   autoCleanup: true,
 });
 

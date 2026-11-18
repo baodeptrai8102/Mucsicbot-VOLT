@@ -35,15 +35,18 @@ if (!PREDEFINED_FILTERS.crystal) {
   };
 }
 
+export const IS_RENDER = Boolean(process.env.RENDER || process.env.IS_RENDER);
+
 export const config = {
   prefix: process.env.PREFIX || "!",
   token: process.env.DISCORD_TOKEN || "",
   clientId: process.env.CLIENT_ID || "",
-  port: Number(process.env.PORT) || 3000,
+  port: Number(process.env.PORT) || 10000,
   defaultVolume: Number(process.env.DEFAULT_VOLUME) || 80,
   autoLeaveTimeoutMs: Number(process.env.AUTO_LEAVE_TIMEOUT_MS) || 10_000, // ĐÚNG 10 GIÂY tự động rời kênh thoại khi không còn người nghe
   cooldownSeconds: Number(process.env.COMMAND_COOLDOWN_SECONDS) || 5, // Chống spam lệnh 5 giây
   ffmpegPath: resolvedFfmpegPath || "ffmpeg",
+  isRender: IS_RENDER,
   colors: {
     primary: 0x9b59b6, // Tím Yae Miko thanh lịch
     success: 0x2ecc71,

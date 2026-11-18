@@ -32,7 +32,7 @@ export function startKeepAliveServer(client?: Client): http.Server {
     res.end("Not Found");
   });
 
-  const port = Number(process.env.PORT) || config.port || 3000;
+  const port = Number(process.env.PORT) || config.port || 10000;
   server.listen(port, "0.0.0.0", () => {
     console.log(`[KeepAlive] HTTP Web server listening on 0.0.0.0:${port} for Render/Cloud keep-alive`);
   });

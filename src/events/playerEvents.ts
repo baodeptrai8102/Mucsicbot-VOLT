@@ -1,8 +1,25 @@
 import type { Client, TextChannel } from "discord.js";
 import type { Player, PlayerManager, Track } from "ziplayer";
-import { config } from "../config.js";
+import { IS_RENDER, config } from "../config.js";
 import { clearLeaveTimer } from "./voiceStateUpdate.js";
 import { buildPlayerActionRows, buildPlayerEmbed } from "../ui/playerUi.js";
+
+/**
+ * Lấy tiêu đề video YouTube qua endpoint oEmbed (Google Datacenter-safe, không bị chặn IP 403)
+ */
+async function fetchYouTubeTitleViaOembed(url: string): Promise<string | null> {
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(oembedUrl, {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { title?: string };
+    return typeof data?.title === "string" ? data.title.trim() : null;
+  } catch {
+    return null;
+  }
+}
 
 export function registerPlayerEvents(manager: PlayerManager, client: Client): void {
   // 1. Sự kiện khi bắt đầu phát bài hát mới: Gửi Embed Now Playing + Buttons + Menu Dropdown
@@ -68,7 +85,76 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
     const errorMessage = error?.message || String(error);
     console.error(`[PlayerEvents] [${player.guildId}] [${trackTitle}] [${errorCode}] Lỗi phát nhạc: ${errorMessage}`);
 
-    // Tự động bỏ qua bài bị lỗi để tránh kẹt hàng đợi
+    const trackUrl = track?.url || player.currentTrack?.url || "";
+    const isYouTube = Boolean(
+      (trackUrl && (trackUrl.includes("youtube.com") || trackUrl.includes("youtu.be"))) ||
+      (track as any)?.source === "youtube" ||
+      (player.currentTrack as any)?.source === "youtube"
+    );
+
+    const fallbackKey = `fallbackHandled_${track?.id || trackUrl || trackTitle}`;
+    const alreadyFallback = Boolean(
+      (player.userdata && player.userdata[fallbackKey]) ||
+      ((player as any).data && (player as any).data[fallbackKey])
+    );
+
+    // Nếu chạy trên Render (IS_RENDER) và track YouTube bị lỗi chưa được fallback:
+    // Tự động giải mã tiêu đề qua oEmbed và chuyển nguồn sang SoundCloud tiếp tục phát mà không bị skip mất bài
+    if (IS_RENDER && isYouTube && !alreadyFallback) {
+      if (!player.userdata) player.userdata = {};
+      player.userdata[fallbackKey] = true;
+      if (!(player as any).data) (player as any).data = {};
+      (player as any).data[fallbackKey] = true;
+
+      let cleanTitle = trackTitle !== "Không rõ" ? trackTitle : "";
+      if (trackUrl && (trackUrl.includes("youtube.com") || trackUrl.includes("youtu.be"))) {
+        const oembedTitle = await fetchYouTubeTitleViaOembed(trackUrl);
+        if (oembedTitle) {
+          cleanTitle = oembedTitle;
+        }
+      }
+
+      let fallbackSuccess = false;
+      try {
+        // Skip track đang lỗi để nhả stream
+        try {
+          if (player.isPlaying || player.currentTrack) {
+            player.skip();
+          }
+        } catch {}
+
+        const scPlugin = ((manager as any).plugins as any[])?.find((p: any) => p.name === "soundcloud");
+        if (scPlugin && cleanTitle) {
+          const scResult = await scPlugin.search(cleanTitle, track?.requestedBy || "system");
+          if (scResult && scResult.tracks && scResult.tracks.length > 0) {
+            const scTrack = scResult.tracks[0];
+            fallbackSuccess = await player.play(scTrack.url || scTrack, track?.requestedBy || "system");
+          }
+        }
+
+        if (!fallbackSuccess && cleanTitle) {
+          fallbackSuccess = await player.play(`soundcloud:${cleanTitle}`, track?.requestedBy || "system");
+        }
+      } catch (fbErr) {
+        console.warn(`[PlayerEvents] [${player.guildId}] Fallback SoundCloud thất bại:`, fbErr);
+      }
+
+      const textChannelId = player.userdata?.textChannelId as string | undefined;
+      if (textChannelId) {
+        const channel = client.channels.cache.get(textChannelId) as TextChannel | undefined;
+        if (channel && channel.isTextBased()) {
+          if (fallbackSuccess) {
+            await channel.send({
+              content: `🔄 Nhận diện luồng YouTube gặp sự cố trên Render (\`${errorCode}\`), tiểu hồ ly đã tự động chuyển bài **${cleanTitle || trackTitle}** sang SoundCloud tiếp tục phát cho Anh Bo rồi nhé! 🌸✨`,
+            }).catch(() => {});
+            return;
+          }
+        }
+      }
+      if (fallbackSuccess) return;
+    }
+
+    // Tự động bỏ qua bài bị lỗi để tránh kẹt hàng đợi (khi đã fallback rồi hoặc không phải link YouTube)
     try {
       if (player.isPlaying || player.currentTrack) {
         player.skip();
