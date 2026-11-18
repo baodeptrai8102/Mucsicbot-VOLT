@@ -75,7 +75,7 @@ async function resolveYouTubeMeta(videoId: string): Promise<{
 export const playCommand: Command = {
   name: "play",
   aliases: ["p"],
-  description: "Phát đúng bài từ link YouTube (bao gồm video dài 20+ phút)",
+  description: "Ưu tiên phát nhạc từ YouTube, hỗ trợ đầy đủ SoundCloud và Spotify",
   usage: "!play <link YouTube / tên bài hát>",
   execute: async (message: Message, args: string[]): Promise<void> => {
     const voiceChannel = message.member?.voice?.channel;
@@ -156,6 +156,7 @@ export const playCommand: Command = {
       (player.connection?.state as any)?.status === "ready";
 
     const { cleanUrl, videoId } = parseYouTubeInput(rawQuery);
+    const isAnyUrl = /^https?:\/\//i.test(cleanUrl);
 
     let connectionFailed: any = null;
     const [loadingMsg, , ytMeta] = await Promise.all([
@@ -228,15 +229,35 @@ export const playCommand: Command = {
     };
 
     try {
-      const playedLabel = youtubeTitle || cleanUrl;
+      let playedLabel = youtubeTitle || cleanUrl;
       let result: any = null;
 
-      if (videoId) {
-        // Khi người dùng dán link YouTube: phát đúng video đó, tuyệt đối không đổi sang bài khác
+      if (isAnyUrl) {
+        // Khi dán link (YouTube, SoundCloud hoặc Spotify): phát đúng link đó
         result = await tryPlay(cleanUrl, 25000);
       } else {
-        // Khi người dùng nhập tên bài hát (không phải link YouTube)
-        result = await tryPlay(cleanUrl, 15000);
+        // Khi nhập tên bài hát: ưu tiên kết quả từ YouTube trước, không có mới sang SoundCloud/Spotify
+        let preferredQuery = cleanUrl;
+        if (typeof (manager as any).search === "function") {
+          const searchRes = await Promise.race([
+            (manager as any).search(cleanUrl),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000))
+          ]);
+          const tracks: any[] = Array.isArray(searchRes?.tracks) ? searchRes.tracks : [];
+          const ytTrack = tracks.find(
+            (t) =>
+              String(t?.source || "").toLowerCase() === "youtube" ||
+              /(?:youtube\.com|youtu\.be)/i.test(String(t?.url || ""))
+          );
+          const chosenTrack = ytTrack || tracks[0];
+          if (chosenTrack?.url) {
+            preferredQuery = chosenTrack.url;
+            if (chosenTrack.title) {
+              playedLabel = chosenTrack.title;
+            }
+          }
+        }
+        result = await tryPlay(preferredQuery, 20000);
       }
 
       if (!result) {
@@ -244,7 +265,7 @@ export const playCommand: Command = {
           embeds: [
             createErrorEmbed(
               videoId
-                ? `Không thể lấy luồng âm thanh trực tiếp từ video **${playedLabel}** (video có thể bị giới hạn độ tuổi hoặc vùng quốc gia).`
+                ? `Không thể lấy luồng âm thanh từ video **${playedLabel}** (video có thể bị giới hạn độ tuổi hoặc vùng quốc gia).`
                 : "Không tìm thấy bài hát phù hợp. Hãy thử nhập tên bài hát rõ ràng hơn!"
             )
           ]
@@ -260,10 +281,8 @@ export const playCommand: Command = {
       const acceptedEmbed = new EmbedBuilder()
         .setColor(CONFIG.EMBED_COLOR)
         .setTitle("⚡ VOLT MUSIC - ĐÃ TIẾP NHẬN")
-        .setDescription(
-          `🎶 Đã nạp đúng nguồn: **${playedLabel}**\nNhạc đang được phát ngay bây giờ!`
-        )
-        .setFooter({ text: "VOLT Music • YouTube Direct Stream" })
+        .setDescription(`🎶 Đã nạp: **${playedLabel}**\nNhạc đang được phát ngay bây giờ!`)
+        .setFooter({ text: "VOLT Music • YouTube Priority Engine" })
         .setTimestamp();
 
       if (youtubeThumbnail) {
@@ -281,7 +300,7 @@ export const playCommand: Command = {
         await loadingMsg.edit({
           embeds: [
             createErrorEmbed(
-              `Không thể phát video YouTube này: ${err?.message || "Vui lòng thử lại sau giây lát!"}`
+              `Không thể phát bài hát này: ${err?.message || "Vui lòng thử lại sau giây lát!"}`
             )
           ]
         });

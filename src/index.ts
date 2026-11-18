@@ -56,7 +56,7 @@ import { startKeepAliveServer } from "./server";
 startKeepAliveServer();
 
 // ============================================================================
-// 4. BỘ VƯỢT CHẶN YOUTUBE 403 TRÊN RENDER (ANDROID_VR / IOS / EMBED)
+// 4. BỘ VƯỢT CHẶN YOUTUBE 403 TRÊN RENDER (YOUTUBEI.GOOGLEAPIS.COM)
 // ============================================================================
 import { Client, GatewayIntentBits, ActivityType, Events } from "discord.js";
 import { CONFIG } from "./config";
@@ -101,15 +101,16 @@ const INNERTUBE_PROFILES = [
     }
   },
   {
-    name: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-    clientId: "85",
-    clientVersion: "2.0",
-    userAgent:
-      "Mozilla/5.0 (SMART-TV; Linux; Tizen 6.0) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/4.0 Chrome/76.0.3809.146 TV Safari/537.36",
+    name: "ANDROID",
+    clientId: "3",
+    clientVersion: "19.45.38",
+    userAgent: "com.google.android.youtube/19.45.38 (Linux; U; Android 14) gzip",
     contextClient: {
-      clientName: "TVHTML5_SIMPLY_EMBEDDED_PLAYER",
-      clientVersion: "2.0",
-      clientScreen: "EMBED",
+      clientName: "ANDROID",
+      clientVersion: "19.45.38",
+      androidSdkVersion: 34,
+      osName: "Android",
+      osVersion: "14",
       hl: "vi",
       gl: "VN"
     }
@@ -130,6 +131,16 @@ function installRenderYouTubeBypass(): void {
         ? input.toString()
         : input.url;
 
+    // Tránh lỗi khởi tạo Innertube nếu Render bị chặn sw.js_data
+    if (urlStr.includes("youtube.com/sw.js_data")) {
+      const res = await originalFetch(input, init);
+      if (res.ok) return res;
+      return new Response(")]}'\n{}", {
+        status: 200,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
+
     // Giữ đúng User-Agent khớp với tham số c= khi tải luồng âm thanh dài từ googlevideo.com
     if (urlStr.includes("googlevideo.com/videoplayback")) {
       const headers = new Headers(
@@ -140,19 +151,13 @@ function installRenderYouTubeBypass(): void {
       } else if (urlStr.includes("c=ANDROID_VR")) {
         headers.set("User-Agent", INNERTUBE_PROFILES[0].userAgent);
       } else if (urlStr.includes("c=ANDROID")) {
-        headers.set(
-          "User-Agent",
-          "com.google.android.youtube/19.45.38 (Linux; U; Android 14) gzip"
-        );
+        headers.set("User-Agent", INNERTUBE_PROFILES[2].userAgent);
       }
       return originalFetch(urlStr, { ...init, headers });
     }
 
-    // Chuyển các request InnerTube (/player, /next) từ WEB sang Mobile/VR để tránh lỗi 403 trên Render
-    if (
-      urlStr.includes("youtube.com/youtubei/v1/player") ||
-      urlStr.includes("youtube.com/youtubei/v1/next")
-    ) {
+    // Chuyển toàn bộ request InnerTube từ www.youtube.com sang youtubei.googleapis.com
+    if (urlStr.includes("/youtubei/v1/")) {
       let rawBody: string | null = null;
       if (typeof init?.body === "string") {
         rawBody = init.body;
@@ -173,43 +178,46 @@ function installRenderYouTubeBypass(): void {
         }
 
         if (parsedBody && typeof parsedBody === "object") {
+          const apiUrl = urlStr.replace(
+            /^https?:\/\/(www\.|m\.)?youtube\.com/,
+            "https://youtubei.googleapis.com"
+          );
+
           for (const profile of INNERTUBE_PROFILES) {
-            const headers = new Headers(
-              init?.headers || (input instanceof Request ? input.headers : undefined)
-            );
+            const headers = new Headers();
+            headers.set("Content-Type", "application/json");
             headers.set("User-Agent", profile.userAgent);
             headers.set("X-YouTube-Client-Name", profile.clientId);
             headers.set("X-YouTube-Client-Version", profile.clientVersion);
-            headers.set("Origin", "https://www.youtube.com");
-            headers.delete("content-length");
-            headers.delete("cookie");
 
-            const nextPayload: Record<string, any> = {
-              ...parsedBody,
+            const cleanPayload: Record<string, any> = {
               context: {
-                ...(parsedBody.context || {}),
-                client: {
-                  ...((parsedBody.context && parsedBody.context.client) || {}),
-                  ...profile.contextClient
-                }
+                client: { ...profile.contextClient }
               }
             };
 
-            if (profile.name === "TVHTML5_SIMPLY_EMBEDDED_PLAYER") {
-              nextPayload.context.thirdParty = {
-                embedUrl: "https://www.youtube.com/"
-              };
-            }
+            if (parsedBody.videoId) cleanPayload.videoId = parsedBody.videoId;
+            if (parsedBody.playlistId) cleanPayload.playlistId = parsedBody.playlistId;
+            if (parsedBody.params) cleanPayload.params = parsedBody.params;
+            if (parsedBody.query) cleanPayload.query = parsedBody.query;
+            if (parsedBody.continuation) cleanPayload.continuation = parsedBody.continuation;
+            if (parsedBody.browseId) cleanPayload.browseId = parsedBody.browseId;
+            cleanPayload.contentCheckOk = true;
+            cleanPayload.racyCheckOk = true;
 
-            const res = await originalFetch(urlStr, {
-              method: init?.method || (input instanceof Request ? input.method : "POST"),
-              headers,
-              body: JSON.stringify(nextPayload),
-              signal: init?.signal
-            });
+            try {
+              const res = await originalFetch(apiUrl, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(cleanPayload),
+                signal: init?.signal
+              });
 
-            if (res.ok) {
-              return res;
+              if (res.ok) {
+                return res;
+              }
+            } catch {
+              // Thử sang profile tiếp theo
             }
           }
         }
@@ -457,6 +465,28 @@ async function bootstrap(): Promise<void> {
 
   const spotifyPlugin = new SpotifyPlugin();
 
+  // Giữ nguyên SoundCloud & Spotify hoạt động bình thường (không khóa),
+  // chỉ ngăn 2 plugin này tự ý phát thay thế khi bài hát gốc là YouTube
+  const isYouTubeTrack = (track: any): boolean => {
+    if (!track) return false;
+    const src = String(track.source || "").toLowerCase();
+    const url = String(track.url || "");
+    return src === "youtube" || /(?:youtube\.com|youtu\.be)/i.test(url);
+  };
+
+  for (const secondaryPlugin of [soundCloudPlugin, spotifyPlugin]) {
+    const origGetStream = (secondaryPlugin as any).getStream?.bind(secondaryPlugin);
+    if (typeof origGetStream === "function") {
+      (secondaryPlugin as any).getStream = async (track: any, ...args: any[]) => {
+        if (isYouTubeTrack(track)) {
+          throw new Error("SKIP_YOUTUBE_STREAM_HIJACK");
+        }
+        return origGetStream(track, ...args);
+      };
+    }
+  }
+
+  // Đặt YouTubePlugin ở vị trí đầu tiên để luôn ưu tiên YouTube
   const plugins: any[] = [youtubePlugin, soundCloudPlugin, spotifyPlugin];
   if (!isRender) {
     const ttsPlugin = new TTSPlugin({ defaultLang: "vi" });
@@ -473,7 +503,7 @@ async function bootstrap(): Promise<void> {
   registerPlayerEvents(playerManager, client);
   console.log(
     `✅ [ZiPlayer] Sẵn sàng! Môi trường: ${
-      isRender ? "Render Cloud (YouTube Direct Bypass)" : "Local VS Code (YouTube Direct)"
+      isRender ? "Render Cloud (YouTube Priority)" : "Local VS Code (YouTube Priority)"
     }`
   );
 
