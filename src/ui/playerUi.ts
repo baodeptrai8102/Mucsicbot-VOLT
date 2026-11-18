@@ -9,6 +9,70 @@ import {
 import type { Track } from "ziplayer";
 import { CONFIG } from "../config";
 
+export type EqPresetKey = "flat" | "clear" | "vocal" | "softbass";
+
+export interface EqPresetConfig {
+  key: EqPresetKey;
+  label: string;
+  shortName: string;
+  description: string;
+  volume: number;
+  bands: { band: number; gain: number }[];
+}
+
+// Bộ EQ 3 dải tần tối ưu CPU thấp, khắc phục tiếng đục/hỗn tạp trên nhạc remix
+export const EQ_PRESETS: Record<EqPresetKey, EqPresetConfig> = {
+  flat: {
+    key: "flat",
+    label: "EQ: Mặc định (Normal)",
+    shortName: "Mặc định",
+    description: "Âm thanh nguyên bản, tiết kiệm CPU tối đa",
+    volume: 100,
+    bands: []
+  },
+  clear: {
+    key: "clear",
+    label: "EQ: Trong trẻo (Clear - Giảm đục)",
+    shortName: "Trong trẻo",
+    description: "Giảm bass ù/đục, tách bạch giọng hát và nhạc nền",
+    volume: 92,
+    bands: [
+      { band: 1, gain: -0.15 },
+      { band: 2, gain: -0.12 },
+      { band: 10, gain: 0.1 }
+    ]
+  },
+  vocal: {
+    key: "vocal",
+    label: "EQ: Rõ giọng hát (Vocal)",
+    shortName: "Rõ giọng hát",
+    description: "Đẩy nhẹ dải trung giúp lời bài hát nổi rõ",
+    volume: 95,
+    bands: [
+      { band: 0, gain: -0.08 },
+      { band: 6, gain: 0.12 },
+      { band: 8, gain: 0.12 }
+    ]
+  },
+  softbass: {
+    key: "softbass",
+    label: "EQ: Bass êm (Chống vỡ tiếng)",
+    shortName: "Bass êm",
+    description: "Tăng nhẹ âm trầm gọn gàng, hạn chế rè loa",
+    volume: 90,
+    bands: [
+      { band: 0, gain: 0.12 },
+      { band: 1, gain: 0.08 },
+      { band: 3, gain: -0.08 }
+    ]
+  }
+};
+
+export function buildBotInviteUrl(clientId?: string): string {
+  const id = clientId || process.env.CLIENT_ID || "1571494188527124510";
+  return `https://discord.com/oauth2/authorize?client_id=${id}&permissions=3147776&scope=bot%20applications.commands`;
+}
+
 /**
  * Format milliseconds or duration value into MM:SS or HH:MM:SS format
  */
@@ -16,8 +80,7 @@ export function formatDuration(duration: number | string | undefined, isLive?: b
   if (isLive || !duration) return "Live";
   if (typeof duration === "string") return duration;
 
-  // Ziplayer track duration is in milliseconds
-  const totalSeconds = Math.floor(duration > 10000000 ? duration / 1000 : duration / 1000);
+  const totalSeconds = Math.floor(duration / 1000);
   if (isNaN(totalSeconds) || totalSeconds <= 0) return "Live";
 
   const hours = Math.floor(totalSeconds / 3600);
@@ -31,7 +94,7 @@ export function formatDuration(duration: number | string | undefined, isLive?: b
 }
 
 /**
- * Extract clean user ID from requestedBy property (which can be a string ID or an object)
+ * Extract clean user ID from requestedBy property
  */
 export function extractRequestedById(requestedBy: any): string {
   if (!requestedBy) return "Unknown";
@@ -43,7 +106,7 @@ export function extractRequestedById(requestedBy: any): string {
 }
 
 /**
- * Creates the exact Now Playing Embed matching Section 4.A
+ * Creates the Now Playing Embed
  */
 export function createNowPlayingEmbed(track: Track, botAvatarUrl?: string | null): EmbedBuilder {
   const formattedDuration = formatDuration(track.duration, track.isLive);
@@ -72,7 +135,7 @@ export function createNowPlayingEmbed(track: Track, botAvatarUrl?: string | null
       }
     )
     .setFooter({
-      text: "VOLT Music • Render 0.1 vCPU Optimized • Anti-Stutter Active",
+      text: "VOLT Music • Anti-Spam 5s • Low-CPU Smooth Mode",
       iconURL: botAvatarUrl || undefined
     })
     .setTimestamp();
@@ -85,7 +148,7 @@ export function createNowPlayingEmbed(track: Track, botAvatarUrl?: string | null
 }
 
 /**
- * Creates Action Row 1 - Playback Buttons matching Section 4.B
+ * Creates Action Row 1 - Playback Buttons
  */
 export function createPlaybackButtonsRow(): ActionRowBuilder<ButtonBuilder> {
   const pauseButton = new ButtonBuilder()
@@ -121,13 +184,33 @@ export function createPlaybackButtonsRow(): ActionRowBuilder<ButtonBuilder> {
 }
 
 /**
- * Creates Action Row 2 - Control Dropdown matching Section 4.C
+ * Creates Action Row 2 - Control & EQ Dropdown
  */
 export function createControlDropdownRow(): ActionRowBuilder<StringSelectMenuBuilder> {
   const menu = new StringSelectMenuBuilder()
     .setCustomId("volt_control_menu")
-    .setPlaceholder("⚡ | Chọn chức năng điều khiển...")
+    .setPlaceholder("⚡ | Chọn chức năng điều khiển & chỉnh EQ...")
     .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel(EQ_PRESETS.flat.label)
+        .setDescription(EQ_PRESETS.flat.description)
+        .setValue("eq_flat")
+        .setEmoji("🎵"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(EQ_PRESETS.clear.label)
+        .setDescription(EQ_PRESETS.clear.description)
+        .setValue("eq_clear")
+        .setEmoji("✨"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(EQ_PRESETS.vocal.label)
+        .setDescription(EQ_PRESETS.vocal.description)
+        .setValue("eq_vocal")
+        .setEmoji("🎤"),
+      new StringSelectMenuOptionBuilder()
+        .setLabel(EQ_PRESETS.softbass.label)
+        .setDescription(EQ_PRESETS.softbass.description)
+        .setValue("eq_softbass")
+        .setEmoji("🔊"),
       new StringSelectMenuOptionBuilder()
         .setLabel("Trộn danh sách phát (Shuffle)")
         .setDescription("Xáo trộn ngẫu nhiên tất cả bài hát")
@@ -159,14 +242,14 @@ export function createControlDropdownRow(): ActionRowBuilder<StringSelectMenuBui
 }
 
 /**
- * Creates the exact Search Timeout Warning Embed
+ * Creates the Search Timeout Warning Embed
  */
 export function createSearchTimeoutEmbed(timeoutSeconds: number = 45): EmbedBuilder {
   return new EmbedBuilder()
     .setColor(CONFIG.WARNING_COLOR)
     .setTitle(`⚠️ Quá thời gian tìm kiếm (${timeoutSeconds} giây)!`)
     .setDescription(
-      "YouTube có thể đang giới hạn lưu lượng mạng máy chủ, vui lòng thử lại hoặc dùng link trực tiếp."
+      "Máy chủ nguồn phản hồi chậm, vui lòng thử lại hoặc nhập tên bài hát ngắn gọn."
     )
     .setFooter({ text: "VOLT Music • Timeout Protection" })
     .setTimestamp();

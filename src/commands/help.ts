@@ -1,6 +1,13 @@
-import { EmbedBuilder, type Message } from "discord.js";
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  type Message
+} from "discord.js";
 import type { Command } from "./types";
 import { CONFIG } from "../config";
+import { buildBotInviteUrl } from "../ui/playerUi";
 
 export const helpCommand: Command = {
   name: "help",
@@ -8,11 +15,13 @@ export const helpCommand: Command = {
   description: "Hiển thị danh sách các lệnh nhạc tiền tố (!) của bot",
   usage: "!help",
   execute: async (message: Message): Promise<void> => {
+    const inviteUrl = buildBotInviteUrl(message.client.user?.id);
+
     const embed = new EmbedBuilder()
       .setColor(CONFIG.EMBED_COLOR)
       .setTitle("⚡ VOLT MUSIC - DANH SÁCH LỆNH TIỀN TỐ (!)")
       .setDescription(
-        "Bot hoạt động hoàn toàn bằng **tiền tố (`!`)**, tối ưu hóa chống giật lag và chống timeout trên nền tảng Render 0.1 vCPU."
+        "Bot hoạt động hoàn toàn bằng **tiền tố (`!`)**, tích hợp bộ chỉnh **EQ**, **chặn spam 5 giây** và tối ưu chống giật lag."
       )
       .addFields(
         {
@@ -20,56 +29,41 @@ export const helpCommand: Command = {
           value: "Tìm kiếm và phát nhạc ngay lập tức từ YouTube, SoundCloud, Spotify hoặc file đính kèm."
         },
         {
-          name: "⏸️ `!pause`",
-          value: "Tạm dừng bài hát đang phát."
+          name: "⏸️ `!pause` • ▶️ `!resume` • ⏭️ `!skip` (`!s`) • ⏹️ `!stop`",
+          value: "Tạm dừng, tiếp tục, bỏ qua bài hoặc dừng phát và rời kênh thoại."
         },
         {
-          name: "▶️ `!resume`",
-          value: "Tiếp tục phát bài hát đang bị tạm dừng."
+          name: "📋 `!queue` (`!q`) • 🎧 `!nowplaying` (`!np`)",
+          value: "Xem hàng chờ hoặc mở lại bảng điều khiển bài hát đang phát."
         },
         {
-          name: "⏭️ `!skip` (hoặc `!s`)",
-          value: "Bỏ qua bài hát hiện tại sang bài tiếp theo."
-        },
-        {
-          name: "⏹️ `!stop`",
-          value: "Dừng phát nhạc, dọn dẹp hàng chờ và rời khỏi kênh thoại."
-        },
-        {
-          name: "📋 `!queue` (hoặc `!q`)",
-          value: "Xem danh sách bài hát đang phát và hàng chờ."
-        },
-        {
-          name: "🎧 `!nowplaying` (hoặc `!np`)",
-          value: "Hiển thị thông tin chi tiết bài hát đang phát cùng thanh điều khiển tương tác."
-        },
-        {
-          name: "🔀 `!shuffle`",
-          value: "Xáo trộn ngẫu nhiên danh sách bài hát trong hàng chờ."
-        },
-        {
-          name: "🔁 `!loop <off|track|queue>`",
-          value: "Cài đặt chế độ lặp lại: `track` (1 bài), `queue` (cả hàng chờ), `off` (tắt)."
-        },
-        {
-          name: "🎛️ `!autoplay`",
-          value: "Bật hoặc tắt tính năng tự động tìm và phát bài tương tự khi hết danh sách."
+          name: "🔀 `!shuffle` • 🔁 `!loop <off|track|queue>` • 🎛️ `!autoplay`",
+          value: "Xáo trộn hàng chờ, lặp lại 1 bài / cả hàng chờ hoặc bật tự động phát."
         },
         {
           name: "🔊 `!volume <0-200>` (hoặc `!vol`)",
-          value: "Điều chỉnh mức âm lượng của bot (mặc định: 80%)."
+          value: "Điều chỉnh mức âm lượng của bot."
         },
         {
-          name: "❓ `!help` (hoặc `!h`)",
-          value: "Hiển thị bảng hướng dẫn này."
+          name: "✨ Bộ chỉnh EQ & Chống lag (Menu điều khiển)",
+          value:
+            "Chọn trực tiếp trong menu **`⚡ | Chọn chức năng điều khiển & chỉnh EQ...`** dưới khung nhạc: **Mặc định**, **Trong trẻo (Giảm đục)**, **Rõ giọng hát**, **Bass êm**.\n• **Chống spam:** Giới hạn thao tác cách nhau **5 giây/người**."
         }
       )
       .setFooter({
-        text: "VOLT Music • Render 0.1 vCPU Optimized • Anti-Stutter Active",
+        text: "VOLT Music • Anti-Spam 5s • Low-CPU Smooth Mode",
         iconURL: message.client.user?.displayAvatarURL() || undefined
       })
       .setTimestamp();
 
-    await message.reply({ embeds: [embed] });
+    const inviteRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setLabel("Mời Music bot VOLT vào Server")
+        .setStyle(ButtonStyle.Link)
+        .setURL(inviteUrl)
+        .setEmoji("➕")
+    );
+
+    await message.reply({ embeds: [embed], components: [inviteRow] });
   }
 };

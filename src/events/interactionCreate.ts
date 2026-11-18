@@ -3,25 +3,84 @@ import {
   MessageFlags,
   type GuildMember
 } from "discord.js";
-import { getPlayer } from "ziplayer";
+import { EQ_PRESETS, type EqPresetKey } from "../ui/playerUi";
+
+const importEsm = new Function("specifier", "return import(specifier)") as <T = any>(
+  specifier: string
+) => Promise<T>;
+
+// Chặn spam nút bấm & menu: 5 giây / người
+const INTERACTION_COOLDOWN_MS = 5000;
+const interactionCooldowns = new Map<string, { until: number; warned: boolean }>();
+
+// Tự dọn RAM mỗi 60 giây để tránh tràn bộ nhớ
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of interactionCooldowns.entries()) {
+    if (now >= entry.until) {
+      interactionCooldowns.delete(key);
+    }
+  }
+}, 60_000).unref();
+
+async function applyEqPreset(player: any, presetKey: EqPresetKey): Promise<void> {
+  const preset = EQ_PRESETS[presetKey] || EQ_PRESETS.flat;
+  const userdata = (player.userdata || {}) as Record<string, any>;
+  player.userdata = { ...userdata, eqPreset: preset.key };
+
+  try {
+    // Điều chỉnh headroom âm lượng tức thì, không làm nghẽn CPU
+    if (typeof player.setVolume === "function") {
+      player.setVolume(preset.volume);
+    }
+
+    // Áp dụng dải tần EQ tương thích với phiên bản ZiPlayer
+    if (typeof player.filters?.setEqualizer === "function") {
+      await player.filters.setEqualizer(preset.bands);
+    } else if (typeof player.filters?.setEQ === "function") {
+      await player.filters.setEQ(preset.bands);
+    } else if (typeof player.setEQ === "function") {
+      await player.setEQ(preset.bands);
+    }
+  } catch {
+    // Giữ nguyên luồng phát nếu plugin không hỗ trợ đổi filter giữa bài
+  }
+}
 
 export async function handleInteractionCreate(interaction: Interaction): Promise<void> {
-  // Only process Buttons and StringSelectMenus
   if (!interaction.isButton() && !interaction.isStringSelectMenu()) return;
 
-  // ANTI-TIMEOUT (10062 PROTECTION): IMMEDIATELY defer reply on first line of execution
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) return;
+
+  // Kiểm tra chặn spam 5s ngay trong RAM trước khi gọi Discord API (giảm lag)
+  const cooldownKey = `${guildId}:${interaction.user.id}`;
+  const now = Date.now();
+  const activeCooldown = interactionCooldowns.get(cooldownKey);
+
+  if (activeCooldown && now < activeCooldown.until) {
+    if (!activeCooldown.warned) {
+      activeCooldown.warned = true;
+      const left = ((activeCooldown.until - now) / 1000).toFixed(1);
+      await interaction
+        .reply({
+          content: `⏳ **Chống spam:** Vui lòng chờ **${left}s** trước khi bấm tiếp!`,
+          flags: MessageFlags.Ephemeral
+        })
+        .catch(() => {});
+    }
+    return;
+  }
+
+  interactionCooldowns.set(cooldownKey, {
+    until: now + INTERACTION_COOLDOWN_MS,
+    warned: false
+  });
+
   try {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   } catch (deferError) {
     console.error("[Interaction Defer Error]", deferError);
-    return;
-  }
-
-  const guildId = interaction.guildId;
-  if (!guildId || !interaction.guild) {
-    await interaction.editReply({
-      content: "❌ Bảng điều khiển này chỉ có thể sử dụng trong máy chủ Discord!"
-    });
     return;
   }
 
@@ -43,6 +102,7 @@ export async function handleInteractionCreate(interaction: Interaction): Promise
     return;
   }
 
+  const { getPlayer } = await importEsm<typeof import("ziplayer")>("ziplayer");
   const player = getPlayer(guildId);
   if (!player) {
     await interaction.editReply({
@@ -51,7 +111,6 @@ export async function handleInteractionCreate(interaction: Interaction): Promise
     return;
   }
 
-  // Handle Buttons
   if (interaction.isButton()) {
     switch (interaction.customId) {
       case "volt_pause": {
@@ -115,9 +174,18 @@ export async function handleInteractionCreate(interaction: Interaction): Promise
     return;
   }
 
-  // Handle StringSelectMenu (Action Row 2 - volt_control_menu)
   if (interaction.isStringSelectMenu() && interaction.customId === "volt_control_menu") {
     const selected = interaction.values[0];
+
+    if (selected && selected.startsWith("eq_")) {
+      const key = selected.replace("eq_", "") as EqPresetKey;
+      const preset = EQ_PRESETS[key] || EQ_PRESETS.flat;
+      await applyEqPreset(player, preset.key);
+      await interaction.editReply({
+        content: `🎛️ Đã chuyển sang chế độ **${preset.label}** (${preset.description}).`
+      });
+      return;
+    }
 
     switch (selected) {
       case "shuffle": {
@@ -159,9 +227,14 @@ export async function handleInteractionCreate(interaction: Interaction): Promise
       }
 
       case "autoplay": {
-        const currentAutoPlay = (player.queue as any).autoPlayEnabled ?? false;
+        const userdata = (player.userdata || {}) as Record<string, any>;
+        const currentAutoPlay =
+          typeof userdata.autoPlay === "boolean"
+            ? userdata.autoPlay
+            : Boolean((player.queue as any).autoPlayEnabled);
         const nextState = !currentAutoPlay;
         player.queue.autoPlay(nextState);
+        player.userdata = { ...userdata, autoPlay: nextState };
         await interaction.editReply({
           content: nextState
             ? "🎛️ Đã **BẬT** chế độ Tự động phát (AutoPlay)! Bot sẽ tự tìm bài tương tự khi hết nhạc."
