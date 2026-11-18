@@ -65,7 +65,7 @@ import { handleInteractionCreate } from "./events/interactionCreate";
 import { handleVoiceStateUpdate } from "./events/voiceStateUpdate";
 import { registerPlayerEvents } from "./events/playerEvents";
 
-const INNERTUBE_PROFILES = [
+const STREAM_PROFILES = [
   {
     name: "ANDROID_VR",
     clientId: "28",
@@ -131,7 +131,6 @@ function installRenderYouTubeBypass(): void {
         ? input.toString()
         : input.url;
 
-    // Tránh lỗi khởi tạo Innertube nếu Render bị chặn sw.js_data
     if (urlStr.includes("youtube.com/sw.js_data")) {
       const res = await originalFetch(input, init);
       if (res.ok) return res;
@@ -147,17 +146,35 @@ function installRenderYouTubeBypass(): void {
         init?.headers || (input instanceof Request ? input.headers : undefined)
       );
       if (urlStr.includes("c=IOS")) {
-        headers.set("User-Agent", INNERTUBE_PROFILES[1].userAgent);
+        headers.set("User-Agent", STREAM_PROFILES[1].userAgent);
       } else if (urlStr.includes("c=ANDROID_VR")) {
-        headers.set("User-Agent", INNERTUBE_PROFILES[0].userAgent);
+        headers.set("User-Agent", STREAM_PROFILES[0].userAgent);
       } else if (urlStr.includes("c=ANDROID")) {
-        headers.set("User-Agent", INNERTUBE_PROFILES[2].userAgent);
+        headers.set("User-Agent", STREAM_PROFILES[2].userAgent);
       }
       return originalFetch(urlStr, { ...init, headers });
     }
 
-    // Chuyển toàn bộ request InnerTube từ www.youtube.com sang youtubei.googleapis.com
+    // Chuyển hướng API InnerTube sang youtubei.googleapis.com để tránh tường lửa www.youtube.com
     if (urlStr.includes("/youtubei/v1/")) {
+      const apiUrl = urlStr.replace(
+        /^https?:\/\/(www\.|m\.)?youtube\.com/,
+        "https://youtubei.googleapis.com"
+      );
+
+      // Với endpoint /search: giữ nguyên payload WEB chuẩn để youtubei.js đọc được kết quả tìm kiếm
+      if (urlStr.includes("/youtubei/v1/search")) {
+        const headers = new Headers(
+          init?.headers || (input instanceof Request ? input.headers : undefined)
+        );
+        headers.delete("cookie");
+        headers.delete("content-length");
+        headers.set("Origin", "https://www.youtube.com");
+        headers.set("Referer", "https://www.youtube.com/");
+        return originalFetch(apiUrl, { ...init, headers });
+      }
+
+      // Với /player và /next: dùng profile ANDROID_VR / IOS / ANDROID để lấy luồng âm thanh gốc
       let rawBody: string | null = null;
       if (typeof init?.body === "string") {
         rawBody = init.body;
@@ -178,12 +195,7 @@ function installRenderYouTubeBypass(): void {
         }
 
         if (parsedBody && typeof parsedBody === "object") {
-          const apiUrl = urlStr.replace(
-            /^https?:\/\/(www\.|m\.)?youtube\.com/,
-            "https://youtubei.googleapis.com"
-          );
-
-          for (const profile of INNERTUBE_PROFILES) {
+          for (const profile of STREAM_PROFILES) {
             const headers = new Headers();
             headers.set("Content-Type", "application/json");
             headers.set("User-Agent", profile.userAgent);
@@ -465,7 +477,7 @@ async function bootstrap(): Promise<void> {
 
   const spotifyPlugin = new SpotifyPlugin();
 
-  // Giữ nguyên SoundCloud & Spotify hoạt động bình thường (không khóa),
+  // Giữ nguyên SoundCloud & Spotify hoạt động bình thường,
   // chỉ ngăn 2 plugin này tự ý phát thay thế khi bài hát gốc là YouTube
   const isYouTubeTrack = (track: any): boolean => {
     if (!track) return false;
@@ -486,7 +498,6 @@ async function bootstrap(): Promise<void> {
     }
   }
 
-  // Đặt YouTubePlugin ở vị trí đầu tiên để luôn ưu tiên YouTube
   const plugins: any[] = [youtubePlugin, soundCloudPlugin, spotifyPlugin];
   if (!isRender) {
     const ttsPlugin = new TTSPlugin({ defaultLang: "vi" });
@@ -526,6 +537,7 @@ async function bootstrap(): Promise<void> {
   };
 
   client.once(Events.ClientReady, onReady);
+  client.on("error", (err) => console.error("[Discord Client Error]:", err));
   client.on("messageCreate", handleMessageCreate);
   client.on("interactionCreate", handleInteractionCreate);
   client.on("voiceStateUpdate", handleVoiceStateUpdate);
@@ -536,9 +548,16 @@ async function bootstrap(): Promise<void> {
     console.log("🔄 Đang kết nối vào Discord Gateway...");
     await client.login(CONFIG.TOKEN);
   }
-}
 
-bootstrap().catch((err) => {
-  console.error("❌ Failed to start VOLT MUSIC BOT:", err);
-  process.exit(1);
-});
+  const shutdown = () => {
+    try {
+      client.destroy();
+    } catch {
+      // Bỏ qua lỗi khi đóng kết nối
+    }
+    process.exit(0);
+  };
+
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+}

@@ -11,8 +11,8 @@ const importEsm = new Function("specifier", "return import(specifier)") as <T = 
 const COMMAND_COOLDOWN_MS = 5000;
 const MAX_RENDER_QUEUE_SIZE = 20;
 const commandCooldowns = new Map<string, { until: number; warned: boolean }>();
+const processedMessageIds = new Set<string>();
 
-// Tự động dọn RAM mỗi 60 giây
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of commandCooldowns.entries()) {
@@ -20,11 +20,17 @@ setInterval(() => {
       commandCooldowns.delete(key);
     }
   }
+  if (processedMessageIds.size > 200) {
+    processedMessageIds.clear();
+  }
 }, 60_000).unref();
 
 export async function handleMessageCreate(message: Message): Promise<void> {
   if (message.author.bot || !message.guild) return;
   if (!message.content.startsWith(CONFIG.PREFIX)) return;
+
+  if (processedMessageIds.has(message.id)) return;
+  processedMessageIds.add(message.id);
 
   const rawContent = message.content.slice(CONFIG.PREFIX.length).trim();
   if (!rawContent) return;
@@ -35,7 +41,6 @@ export async function handleMessageCreate(message: Message): Promise<void> {
   const command = getCommand(commandName);
   if (!command) return;
 
-  // Kiểm tra chống spam 5 giây (chỉ nhắc 1 lần mỗi chu kỳ để tránh lag Discord API)
   const cooldownKey = `${message.guild.id}:${message.author.id}`;
   const now = Date.now();
   const activeCooldown = commandCooldowns.get(cooldownKey);
@@ -59,12 +64,32 @@ export async function handleMessageCreate(message: Message): Promise<void> {
     warned: false
   });
 
-  // Giới hạn hàng chờ tối đa 20 bài trên Render để chống tràn 512MB RAM & giật tiếng
-  const lowerCmd = commandName.toLowerCase();
   const isRender = Boolean(
     CONFIG.IS_RENDER || process.env.RENDER || process.env.RENDER_SERVICE_ID
   );
 
+  // Chống lặp tin nhắn nếu VS Code đang mở test song song hoặc Render đang chuyển container
+  if (isRender && message.client.user) {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    try {
+      const recentMessages = await message.channel.messages.fetch({
+        after: message.id,
+        limit: 5
+      });
+      const alreadyHandled = recentMessages.some(
+        (m) =>
+          m.author.id === message.client.user!.id &&
+          m.reference?.messageId === message.id
+      );
+      if (alreadyHandled) return;
+    } catch {
+      // Tiếp tục chạy nếu không đọc được lịch sử kênh
+    }
+  }
+
+  console.log(`[Command] ${message.author.tag} -> ${CONFIG.PREFIX}${commandName} ${args.join(" ")}`);
+
+  const lowerCmd = commandName.toLowerCase();
   if (isRender && (lowerCmd === "play" || lowerCmd === "p")) {
     try {
       const { getPlayer } = await importEsm<typeof import("ziplayer")>("ziplayer");

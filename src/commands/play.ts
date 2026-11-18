@@ -7,6 +7,8 @@ const importEsm = new Function("specifier", "return import(specifier)") as <T = 
   specifier: string
 ) => Promise<T>;
 
+const activeGuildLocks = new Set<string>();
+
 function isHeavyPlaylistUrl(rawInput: string): boolean {
   const lower = rawInput.toLowerCase();
   return (
@@ -75,7 +77,7 @@ async function resolveYouTubeMeta(videoId: string): Promise<{
 export const playCommand: Command = {
   name: "play",
   aliases: ["p"],
-  description: "Ưu tiên phát nhạc từ YouTube, hỗ trợ đầy đủ SoundCloud và Spotify",
+  description: "Ưu tiên phát nhạc từ YouTube, chống lặp và hỗ trợ đầy đủ SoundCloud/Spotify",
   usage: "!play <link YouTube / tên bài hát>",
   execute: async (message: Message, args: string[]): Promise<void> => {
     const voiceChannel = message.member?.voice?.channel;
@@ -121,122 +123,131 @@ export const playCommand: Command = {
       return;
     }
 
-    const { getManager, getPlayer } = await importEsm<typeof import("ziplayer")>("ziplayer");
-    const manager = getManager();
-    if (!manager) {
+    if (activeGuildLocks.has(guildId)) {
       await message.reply({
-        embeds: [createErrorEmbed("Hệ thống âm thanh đang khởi động, thử lại sau 2 giây!")]
+        embeds: [createErrorEmbed("Bot đang nạp bài hát trước đó, vui lòng chờ 2 giây!")]
       });
       return;
     }
 
-    let player = getPlayer(guildId);
-    if (!player) {
-      player = await manager.create(guildId, {
-        leaveOnEnd: true,
-        leaveOnEmpty: true,
-        volume: 100,
-        preload: {
-          enabled: false,
-          autoDisableInLowPerformance: true
-        },
-        antiStuck: {
-          enabled: false,
-          maxRetries: 0,
-          controlledSkipThreshold: 1
-        },
-        userdata: { channel: message.channel }
-      });
-    } else {
-      player.userdata = { ...(player.userdata || {}), channel: message.channel };
-    }
-
-    const isConnectionReady =
-      Boolean(player.connection) &&
-      (player.connection?.state as any)?.status === "ready";
+    activeGuildLocks.add(guildId);
 
     const { cleanUrl, videoId } = parseYouTubeInput(rawQuery);
     const isAnyUrl = /^https?:\/\//i.test(cleanUrl);
 
-    let connectionFailed: any = null;
-    const [loadingMsg, , ytMeta] = await Promise.all([
-      message.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(CONFIG.EMBED_COLOR)
-            .setDescription(
-              videoId
-                ? "⚡ **Đang vào kênh thoại và tải luồng âm thanh trực tiếp từ YouTube...**"
-                : "⚡ **Đang vào kênh thoại và tìm kiếm bài hát...**"
-            )
-        ]
-      }),
-      !isConnectionReady
-        ? player.connect(voiceChannel as any).catch((err: any) => {
-            if (!err?.message?.includes("aborted")) {
-              connectionFailed = err;
-            }
-          })
-        : Promise.resolve(),
-      videoId ? resolveYouTubeMeta(videoId) : Promise.resolve(null)
-    ]);
-
-    if (connectionFailed) {
-      await loadingMsg.edit({
-        embeds: [
-          createErrorEmbed(
-            `Không thể kết nối vào kênh thoại: ${connectionFailed?.message || "Kiểm tra quyền của bot!"}`
+    // Gửi phản hồi ngay lập tức để người dùng luôn thấy bot nhận lệnh
+    const loadingMsg = await message.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(CONFIG.EMBED_COLOR)
+          .setDescription(
+            videoId
+              ? "⚡ **Đang vào kênh thoại và tải luồng âm thanh trực tiếp từ YouTube...**"
+              : "⚡ **Đang vào kênh thoại và tìm kiếm bài hát...**"
           )
-        ]
-      });
-      return;
-    }
-
-    if (!isConnectionReady) {
-      await new Promise((resolve) => setTimeout(resolve, 900));
-    }
-
-    const youtubeThumbnail = ytMeta?.thumbnail || null;
-    const youtubeTitle = ytMeta?.title || null;
-    const requestedById = message.author.id;
-
-    if (videoId && youtubeThumbnail) {
-      const currentData = (player.userdata || {}) as Record<string, any>;
-      const ytMetaQueue = Array.isArray(currentData.ytMetaQueue)
-        ? [...currentData.ytMetaQueue]
-        : [];
-      ytMetaQueue.push({
-        videoId,
-        url: cleanUrl,
-        title: youtubeTitle || "",
-        simpleTitle: youtubeTitle ? simplifySongTitle(youtubeTitle).toLowerCase() : "",
-        thumbnail: youtubeThumbnail
-      });
-      player.userdata = {
-        ...currentData,
-        channel: message.channel,
-        ytMetaQueue
-      };
-    }
-
-    const tryPlay = async (targetQuery: string, timeoutMs: number) => {
-      return Promise.race([
-        player!.play(targetQuery, requestedById),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("SEARCH_TIMEOUT")), timeoutMs)
-        )
-      ]);
-    };
+      ]
+    });
 
     try {
+      const { getManager, getPlayer } = await importEsm<typeof import("ziplayer")>("ziplayer");
+      const manager = getManager();
+      if (!manager) {
+        await loadingMsg.edit({
+          embeds: [createErrorEmbed("Hệ thống âm thanh đang khởi động, thử lại sau 2 giây!")]
+        });
+        return;
+      }
+
+      let player = getPlayer(guildId);
+      if (!player) {
+        player = await manager.create(guildId, {
+          leaveOnEnd: true,
+          leaveOnEmpty: true,
+          volume: 100,
+          preload: {
+            enabled: false,
+            autoDisableInLowPerformance: true
+          },
+          antiStuck: {
+            enabled: false,
+            maxRetries: 0,
+            controlledSkipThreshold: 1
+          },
+          userdata: { channel: message.channel }
+        });
+      } else {
+        player.userdata = { ...(player.userdata || {}), channel: message.channel };
+      }
+
+      const isConnectionReady =
+        Boolean(player.connection) &&
+        (player.connection?.state as any)?.status === "ready";
+
+      let connectionFailed: any = null;
+      const [, ytMeta] = await Promise.all([
+        !isConnectionReady
+          ? player.connect(voiceChannel as any).catch((err: any) => {
+              if (!err?.message?.includes("aborted")) {
+                connectionFailed = err;
+              }
+            })
+          : Promise.resolve(),
+        videoId ? resolveYouTubeMeta(videoId) : Promise.resolve(null)
+      ]);
+
+      if (connectionFailed) {
+        await loadingMsg.edit({
+          embeds: [
+            createErrorEmbed(
+              `Không thể kết nối vào kênh thoại: ${connectionFailed?.message || "Kiểm tra quyền của bot!"}`
+            )
+          ]
+        });
+        return;
+      }
+
+      if (!isConnectionReady) {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+
+      const youtubeThumbnail = ytMeta?.thumbnail || null;
+      const youtubeTitle = ytMeta?.title || null;
+      const requestedById = message.author.id;
+
+      if (videoId && youtubeThumbnail) {
+        const currentData = (player.userdata || {}) as Record<string, any>;
+        const ytMetaQueue = Array.isArray(currentData.ytMetaQueue)
+          ? [...currentData.ytMetaQueue]
+          : [];
+        ytMetaQueue.push({
+          videoId,
+          url: cleanUrl,
+          title: youtubeTitle || "",
+          simpleTitle: youtubeTitle ? simplifySongTitle(youtubeTitle).toLowerCase() : "",
+          thumbnail: youtubeThumbnail
+        });
+        player.userdata = {
+          ...currentData,
+          channel: message.channel,
+          ytMetaQueue
+        };
+      }
+
+      const tryPlay = async (targetQuery: string, timeoutMs: number) => {
+        return Promise.race([
+          player!.play(targetQuery, requestedById),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("SEARCH_TIMEOUT")), timeoutMs)
+          )
+        ]);
+      };
+
       let playedLabel = youtubeTitle || cleanUrl;
       let result: any = null;
 
       if (isAnyUrl) {
-        // Khi dán link (YouTube, SoundCloud hoặc Spotify): phát đúng link đó
         result = await tryPlay(cleanUrl, 25000);
       } else {
-        // Khi nhập tên bài hát: ưu tiên kết quả từ YouTube trước, không có mới sang SoundCloud/Spotify
         let preferredQuery = cleanUrl;
         if (typeof (manager as any).search === "function") {
           const searchRes = await Promise.race([
@@ -305,6 +316,8 @@ export const playCommand: Command = {
           ]
         });
       }
+    } finally {
+      activeGuildLocks.delete(guildId);
     }
   }
 };
