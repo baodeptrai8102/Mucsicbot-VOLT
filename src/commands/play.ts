@@ -8,27 +8,14 @@ import { getManager, getPlayer, type Track } from "ziplayer";
 import { IS_RENDER, checkCooldown, config } from "../config.js";
 import { clearLeaveTimer } from "../events/voiceStateUpdate.js";
 import { formatDuration } from "../ui/playerUi.js";
+import {
+  cleanYouTubeUrl,
+  fetchYouTubeTitleViaOembed,
+} from "../plugins/safeYouTubePlugin.js";
 
 export const name = "play";
 export const aliases = ["p"];
 export const description = "Phát nhạc từ YouTube, SoundCloud, Spotify hoặc tìm kiếm theo từ khóa";
-
-/**
- * Lấy tiêu đề video YouTube qua endpoint oEmbed (Google Datacenter-safe, không bị chặn IP 403)
- */
-async function fetchYouTubeTitleViaOembed(url: string): Promise<string | null> {
-  try {
-    const oembedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
-    const res = await fetch(oembedUrl, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { title?: string };
-    return typeof data?.title === "string" ? data.title.trim() : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Chọn bài hát tối ưu nhất từ danh sách kết quả tìm kiếm:
@@ -240,13 +227,26 @@ export async function execute(message: Message, args: string[]): Promise<void> {
     let selectedTrack: Track | null = null;
 
     if (isDirectUrl) {
-      // Khi người dùng nhập link URL trực tiếp (bắt đầu bằng http:// hoặc https://):
-      // Giữ nguyên URL truyền thẳng vào player.play, không tự tìm kiếm lại.
-      targetToPlay = cleanQuery;
+      // Khi người dùng nhập link URL trực tiếp: chuẩn hóa xóa tham số tracking rác
+      targetToPlay = cleanYouTubeUrl(cleanQuery);
     } else {
       // Khi người dùng nhập tên bài (text search query):
-      // Nếu chạy trên Render: ưu tiên tìm kiếm qua SoundCloud trước để tránh 403 và lên nhạc siêu nhanh
-      if (IS_RENDER) {
+      // YouTube là nguồn số 1 trên cả Render lẫn VS Code
+      try {
+        const searchResult = await player.search(cleanQuery, message.author.id);
+        if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
+          const bestTrack = selectBestTrack(searchResult.tracks, cleanQuery);
+          if (bestTrack) {
+            selectedTrack = bestTrack;
+            targetToPlay = bestTrack.url || bestTrack;
+          }
+        }
+      } catch (searchError) {
+        console.warn("[Play Command] Tìm kiếm YouTube thất bại, thử fallback sang SoundCloud:", searchError);
+      }
+
+      // Chỉ khi YouTube không tìm thấy kết quả thì mới fallback tìm kiếm qua SoundCloud
+      if (!selectedTrack) {
         try {
           const scPlugin = ((manager as any).plugins as any[])?.find((p: any) => p.name === "soundcloud");
           if (scPlugin) {
@@ -260,24 +260,7 @@ export async function execute(message: Message, args: string[]): Promise<void> {
             }
           }
         } catch (scErr) {
-          console.warn("[Play Command] Tìm kiếm SoundCloud thất bại, fallback sang YouTube:", scErr);
-        }
-      }
-
-      // Nếu không tìm thấy trên SoundCloud hoặc đang chạy trên máy cá nhân (!IS_RENDER):
-      // Đảm bảo ưu tiên kết quả YouTube video chính thức, chặn rơi nhầm sang Shorts / cover
-      if (!selectedTrack) {
-        try {
-          const searchResult = await player.search(cleanQuery, message.author.id);
-          if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
-            const bestTrack = selectBestTrack(searchResult.tracks, cleanQuery);
-            if (bestTrack) {
-              selectedTrack = bestTrack;
-              targetToPlay = bestTrack.url || bestTrack;
-            }
-          }
-        } catch (searchError) {
-          console.warn("[Play Command] Không thể tiền lọc tìm kiếm, fallback sang query gốc:", searchError);
+          console.warn("[Play Command] Fallback tìm kiếm SoundCloud thất bại:", scErr);
           targetToPlay = cleanQuery;
         }
       }
@@ -286,15 +269,17 @@ export async function execute(message: Message, args: string[]): Promise<void> {
     // 5. Phát nhạc hoặc thêm vào hàng đợi, kiểm tra kỹ trường hợp thất bại và fallback SoundCloud
     let success = false;
     try {
+      // Đảm bảo tuyệt đối không autoplay ngầm (tiết kiệm 0.1 vCPU và chống lỗi 403 /youtubei/v1/next)
+      player.queue.autoPlay(false);
       success = await player.play(targetToPlay, message.author.id);
     } catch (playErr) {
       console.warn("[Play Command] Lỗi player.play ban đầu:", playErr);
       success = false;
     }
 
-    // Nếu chạy trên Render và dán link YouTube bị lỗi hoặc trả về false: fallback qua YouTube oEmbed -> SoundCloud
+    // Nếu phát thất bại và là link YouTube: fallback qua YouTube oEmbed -> SoundCloud
     const isYouTubeUrl = isDirectUrl && (cleanQuery.includes("youtube.com") || cleanQuery.includes("youtu.be"));
-    if (!success && IS_RENDER && isYouTubeUrl) {
+    if (!success && isYouTubeUrl) {
       const fallbackKey = `fallbackHandled_${cleanQuery}`;
       const isHandled = Boolean(
         (player.userdata && player.userdata[fallbackKey]) ||
@@ -343,7 +328,7 @@ export async function execute(message: Message, args: string[]): Promise<void> {
 
         if (success && message.channel && "send" in message.channel) {
           await (message.channel as any).send(
-            `🔄 Nhận diện dải IP Render bị giới hạn, tiểu hồ ly đã tự động chuyển nguồn âm thanh "${searchTitle}" sang SoundCloud mượt mà cho Anh Bo rồi nhé! 🌸✨`
+            `🔄 Nhận diện luồng YouTube bị giới hạn, tiểu hồ ly đã tự động chuyển nguồn âm thanh "${searchTitle}" sang SoundCloud mượt mà cho Anh Bo rồi nhé! 🌸✨`
           ).catch(() => {});
         }
       }

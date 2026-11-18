@@ -5,25 +5,34 @@ import { PREDEFINED_FILTERS } from "ziplayer";
 
 dotenv.config();
 
-// Tích hợp ffmpeg-static rõ ràng cho môi trường Linux, Render và Windows
-const resolvedFfmpegPath: string | null = (
-  typeof ffmpegPath === "string" ? ffmpegPath : (ffmpegPath as any)?.default || null
-);
+// Tích hợp ffmpeg-static rõ ràng cho môi trường Linux, Render và Windows (chỉ chmodSync đúng 1 lần duy nhất)
+export let isFfmpegChmodDone = false;
 
-if (resolvedFfmpegPath) {
-  process.env.FFMPEG_PATH = resolvedFfmpegPath;
-  // Đảm bảo quyền thực thi (chmod 755) trên Linux/Render container
-  if (process.platform !== "win32") {
-    try {
-      if (fs.existsSync(resolvedFfmpegPath)) {
-        fs.chmodSync(resolvedFfmpegPath, 0o755);
-        console.log(`[FFmpeg] Đã cấp quyền thực thi (0755) cho binary FFmpeg tại: ${resolvedFfmpegPath}`);
+function setupFfmpegBinary(): string {
+  const resolvedPath: string | null = (
+    typeof ffmpegPath === "string" ? ffmpegPath : (ffmpegPath as any)?.default || null
+  );
+
+  if (resolvedPath) {
+    process.env.FFMPEG_PATH = resolvedPath;
+    if (process.platform !== "win32" && !isFfmpegChmodDone) {
+      try {
+        if (fs.existsSync(resolvedPath)) {
+          fs.chmodSync(resolvedPath, 0o755);
+          isFfmpegChmodDone = true;
+          console.log(`[FFmpeg] Đã cấp quyền thực thi (0755) cho binary FFmpeg tại: ${resolvedPath}`);
+        }
+      } catch (chmodErr) {
+        console.warn("[FFmpeg] Không thể đặt quyền thực thi chmod:", chmodErr);
       }
-    } catch (chmodErr) {
-      console.warn("[FFmpeg] Không thể đặt quyền thực thi chmod:", chmodErr);
     }
+    return resolvedPath;
   }
+
+  return "ffmpeg";
 }
+
+const resolvedFfmpegPath = setupFfmpegBinary();
 
 // Bổ sung bộ lọc Crystal vào danh sách PREDEFINED_FILTERS của ziplayer nếu chưa có
 if (!PREDEFINED_FILTERS.crystal) {

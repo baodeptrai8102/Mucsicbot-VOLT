@@ -1,4 +1,4 @@
-# VOLT Music Bot - Render 0.1 vCPU Optimization & Bypass Worklist
+# VOLT Music Bot - YouTube Priority & Stream Pipeline Overhaul
 
 ## Quy tắc trạng thái
 - [ ] = Chưa làm
@@ -6,10 +6,10 @@
 - [!] = Lỗi sau 2 lần thử (ghi log và dừng)
 
 ## Danh sách Task
-- [x] Task 1: Sửa triệt để RenderBypass 403 & Fetch Override trong `src/index.ts` | Yêu cầu: Bắt buộc xử lý cả 3 kiểu đầu vào `string`, `URL` và đối tượng `Request` của `fetch(input, init)`; viết lại URL chứa `www.youtube.com/youtubei/` hoặc `music.youtube.com/youtubei/` sang `youtubei.googleapis.com/youtubei/`; khi clone từ `Request`, tạo `Headers` mới và xóa `host` cũ; tự động gắn `process.env.YOUTUBE_COOKIE` nếu có; trên Render (`IS_RENDER`) hạ timeout xuống 4500ms để thất bại nhanh | Lệnh test: npm run build
-- [x] Task 2: Tăng tốc độ lên nhạc trên Render & Fallback SoundCloud chống lỗi Error trong `src/commands/play.ts` và `src/events/playerEvents.ts` | Yêu cầu: Khi `IS_RENDER`: nếu tìm bằng từ khóa thì ưu tiên tìm qua SoundCloud trước, fallback YouTube nếu không có kết quả; nếu dán link YouTube và bị 403/playerError thì gọi YouTube oEmbed lấy tiêu đề rồi tự động phát qua SoundCloud (chống lặp trong `player.data`, tối đa 1 lần fallback/bài); khi `!IS_RENDER`: giữ nguyên ưu tiên YouTube | Lệnh test: npm run build
-- [x] Task 3: Tối ưu 0.1 vCPU Render & Sửa Port KeepAlive trong `src/server.ts`, `src/config.ts`, `src/index.ts` | Yêu cầu: Bỏ `setTimeout` dư thừa sau `player.connect()`; tắt mặc định `player.queue.autoPlay(false)` ngăn gọi ngầm `/next`; giữ inline Opus gốc khi EQ tắt; trên Render chỉ nạp 3 plugin (SoundCloud, YouTube, Spotify), bỏ TTS và Attachments; giữ `chmodSync(0o755)` cho FFmpeg trên Linux; sửa `server.ts` bind `Number(process.env.PORT) || 10000` trên `0.0.0.0` để Render nhận port ngay | Lệnh test: npm run build
-- [x] Task 4: Kiểm tra tích hợp & Build sạch 0 lỗi | Yêu cầu: Rà soát toàn bộ file đã sửa, giữ nguyên đầy đủ UI embed, 4 nút bấm, menu Dropdown EQ, lệnh prefix `!`, cooldown 5s, auto leave 10s; chạy `npm run build` đạt 0 lỗi | Lệnh test: npm run build
+- [x] Task 1: Ưu tiên YouTube làm nguồn số 1 & Sửa triệt để lỗi 403 / Timeout trên Render | Yêu cầu: Khôi phục YouTube số 1 trên cả Render và VS Code; chuẩn hóa link xóa sạch ?si=...; tăng timeout fetch lên 10000ms, xử lý đủ 3 kiểu string/URL/Request, rewrite sang youtubei.googleapis.com, tự gắn Cookie; tạo SafeYouTubePlugin thử luân phiên clients (IOS, ANDROID, TV_EMBEDDED...) và chỉ fallback SoundCloud khi YouTube không thể trích xuất | Lệnh test: npm run build
+- [x] Task 2: Soi gốc và diệt tận gốc lỗi `The _write() method is not implemented` trong SoundCloudPlugin và ziplayer stream | Yêu cầu: Đọc trực tiếp node_modules/@ziplayer/plugin/dist/SoundCloudPlugin.js và ziplayer/dist/index.js; tạo SafeSoundCloudPlugin đảm bảo getStream() luôn trả về Node.js Readable / PassThrough stream hợp lệ, không bao giờ thiếu _write(); kiểm tra tương thích Node 20+ | Lệnh test: npm run build
+- [x] Task 3: Dọn lỗi lặp queueEnd, dọn log FFmpeg & Tối ưu 0.1 vCPU | Yêu cầu: Debounce queueEnd trong 3000ms theo guildId chống gửi lặp 2 tin nhắn; log error?.stack đầy đủ khi có playerError/connectionError; chỉ chmodSync FFmpeg đúng 1 lần không in log lặp; tắt autoPlay(false); giữ inline Opus khi EQ tắt | Lệnh test: npm run build
+- [x] Task 4: Chạy test stream thực tế & Build sạch 0 lỗi | Yêu cầu: Chạy script test npx tsx đọc ít nhất 16KB dữ liệu âm thanh thật từ cả YouTube và SoundCloud, xác nhận không còn lỗi _write() hay timeout, sau đó xóa file test; chạy npm run build đạt 0 lỗi; báo cáo nguyên nhân gốc lỗi _write() | Lệnh test: npm run build
 
 ## Nhật ký dừng
 - Chưa có lỗi.

@@ -5,6 +5,11 @@ import { clearLeaveTimer } from "./voiceStateUpdate.js";
 import { buildPlayerActionRows, buildPlayerEmbed } from "../ui/playerUi.js";
 
 /**
+ * Bộ chống lặp debounce cho sự kiện queueEnd theo guildId (3000ms)
+ */
+const lastQueueEndMap = new Map<string, number>();
+
+/**
  * Lấy tiêu đề video YouTube qua endpoint oEmbed (Google Datacenter-safe, không bị chặn IP 403)
  */
 async function fetchYouTubeTitleViaOembed(url: string): Promise<string | null> {
@@ -59,8 +64,16 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
     console.log(`[PlayerEvents] [${player.guildId}] Kết thúc bài hát: ${track.title}`);
   });
 
-  // 3. Sự kiện khi hàng đợi phát hết bài
+  // 3. Sự kiện khi hàng đợi phát hết bài (Debounce 3000ms chống lặp tin nhắn)
   manager.on("queueEnd", async (player: Player) => {
+    const now = Date.now();
+    const lastTime = lastQueueEndMap.get(player.guildId) || 0;
+    if (now - lastTime < 3000) {
+      console.log(`[PlayerEvents] [${player.guildId}] queueEnd bị bỏ qua do debounce (< 3000ms).`);
+      return;
+    }
+    lastQueueEndMap.set(player.guildId, now);
+
     console.log(`[PlayerEvents] [${player.guildId}] Hàng đợi đã phát hết.`);
 
     const textChannelId = player.userdata?.textChannelId as string | undefined;
@@ -82,10 +95,11 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
   manager.on("playerError", async (player: Player, error: any, track?: Track) => {
     const trackTitle = track?.title || player.currentTrack?.title || "Không rõ";
     const errorCode = error?.code || error?.name || "STREAM_ERROR";
-    const errorMessage = error?.message || String(error);
-    console.error(`[PlayerEvents] [${player.guildId}] [${trackTitle}] [${errorCode}] Lỗi phát nhạc: ${errorMessage}`);
-
     const trackUrl = track?.url || player.currentTrack?.url || "";
+    console.error(
+      `[PlayerEvents] [${player.guildId}] [${trackTitle}] [${errorCode}] Lỗi phát nhạc:`,
+      error?.stack || error
+    );
     const isYouTube = Boolean(
       (trackUrl && (trackUrl.includes("youtube.com") || trackUrl.includes("youtu.be"))) ||
       (track as any)?.source === "youtube" ||
@@ -181,7 +195,11 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
   // 5. Sự kiện khi gặp lỗi kết nối voice
   manager.on("connectionError", async (player: Player, error: any) => {
     const errorCode = error?.code || error?.name || "VOICE_CONNECTION_ERROR";
-    console.error(`[PlayerEvents] [${player.guildId}] [${errorCode}] Lỗi kết nối kênh thoại:`, error?.message || error);
+    const trackTitle = player.currentTrack?.title || "Không có bài";
+    console.error(
+      `[PlayerEvents] [${player.guildId}] [${trackTitle}] [${errorCode}] Lỗi kết nối kênh thoại:`,
+      error?.stack || error
+    );
 
     const textChannelId = player.userdata?.textChannelId as string | undefined;
     if (!textChannelId) return;
@@ -202,6 +220,7 @@ export function registerPlayerEvents(manager: PlayerManager, client: Client): vo
   manager.on("playerDestroy", (player: Player) => {
     console.log(`[PlayerEvents] [${player.guildId}] Trình phát nhạc đã được dọn dẹp và hủy.`);
     clearLeaveTimer(player.guildId);
+    lastQueueEndMap.delete(player.guildId);
     if (player.userdata) {
       player.userdata = {};
     }

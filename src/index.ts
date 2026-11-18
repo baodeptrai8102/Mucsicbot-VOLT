@@ -1,6 +1,5 @@
-import fs from "node:fs";
-import ffmpegPath from "ffmpeg-static";
 import { IS_RENDER } from "./config.js";
+import { Platform } from "youtubei.js";
 
 // =========================================================================
 // [QUAN TRỌNG NHẤT - CHỐNG LỖI RENDER 403 FORBIDDEN & TIMEOUT]
@@ -68,7 +67,7 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     }
   }
 
-  // 3. Timeout: Trên Render hạ xuống 4500ms để fail fast; giữ 12000ms khi !IS_RENDER
+  // 3. Timeout: TĂNG timeout cho metadata/search lên 10000ms (10s) thay vì 4500ms để không cắt ngang lúc Innertube khởi tạo session gây TimeoutError.
   // Tuyệt đối KHÔNG áp timeout lên stream audio dài.
   const isStreamAudio = modifiedUrl.includes("videoplayback") || modifiedUrl.includes("googlevideo.com");
   const isSearchOrMetadata = !isStreamAudio && (
@@ -78,11 +77,13 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     modifiedUrl.includes("youtubei.googleapis.com")
   );
 
-  const timeoutMs = IS_RENDER ? 4500 : 12000;
-
   let signal = init?.signal;
+  if (!signal && typeof input === "object" && input !== null && "signal" in input) {
+    signal = (input as Request).signal;
+  }
+
   if (isSearchOrMetadata) {
-    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const timeoutSignal = AbortSignal.timeout(10000);
     if (signal) {
       if ("any" in AbortSignal && typeof (AbortSignal as any).any === "function") {
         signal = (AbortSignal as any).any([signal, timeoutSignal]);
@@ -94,25 +95,35 @@ globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise
     }
   }
 
+  let method = init?.method;
+  if (!method && typeof input === "object" && input !== null && "method" in input) {
+    method = (input as Request).method;
+  }
+
+  let body = init?.body;
+  if (body === undefined && typeof input === "object" && input !== null && "body" in input) {
+    body = (input as any).body;
+  }
+
   const modifiedInit: RequestInit = {
     ...init,
+    method: method || "GET",
     headers,
     signal,
   };
 
-  // Bảo toàn method và body nếu input ban đầu là Request
-  if (!modifiedInit.method && typeof input === "object" && input !== null && "method" in input) {
-    modifiedInit.method = (input as Request).method;
-  }
-  if (modifiedInit.body === undefined && typeof input === "object" && input !== null && "body" in input && (input as any).body) {
-    modifiedInit.body = (input as any).body;
+  if (body !== undefined) {
+    modifiedInit.body = body;
     (modifiedInit as any).duplex = "half";
   }
 
   return originalFetch(modifiedUrl, modifiedInit);
 };
 
-console.log(`[RenderBypass] Đã kích hoạt override globalThis.fetch chuyển hướng Innertube sang youtubei.googleapis.com (IS_RENDER=${IS_RENDER}, timeout ${IS_RENDER ? 4500 : 12000}ms cho search/metadata)`);
+// Đảm bảo Platform.shim.fetch của youtubei.js trỏ đúng vào override fetch
+Platform.shim.fetch = globalThis.fetch;
+
+console.log(`[RenderBypass] Đã kích hoạt override globalThis.fetch chuyển hướng Innertube sang youtubei.googleapis.com (IS_RENDER=${IS_RENDER}, timeout 10000ms cho search/metadata)`);
 
 import {
   ActivityType,
@@ -123,16 +134,12 @@ import {
 } from "discord.js";
 import {
   AttachmentsPlugin,
-  SoundCloudPlugin,
   SpotifyPlugin,
   TTSPlugin,
-  YouTubePlugin,
 } from "@ziplayer/plugin";
-import { Platform } from "youtubei.js";
+import { SafeYouTubePlugin } from "./plugins/safeYouTubePlugin.js";
+import { SafeSoundCloudPlugin } from "./plugins/safeSoundCloudPlugin.js";
 import { Readable } from "node:stream";
-
-// Đảm bảo Platform.shim.fetch của youtubei.js trỏ đúng vào override fetch
-Platform.shim.fetch = globalThis.fetch;
 import { getPlayer, PlayerManager } from "ziplayer";
 import { checkCooldown, config } from "./config.js";
 import * as helpCommand from "./commands/help.js";
@@ -144,24 +151,7 @@ import { startKeepAliveServer } from "./server.js";
 import * as voiceStateUpdateEvent from "./events/voiceStateUpdate.js";
 import { clearLeaveTimer } from "./events/voiceStateUpdate.js";
 
-// Tích hợp ffmpeg-static rõ ràng cho môi trường Linux, Render và Windows
-const resolvedFfmpegPath: string | null = (
-  typeof ffmpegPath === "string" ? ffmpegPath : (ffmpegPath as any)?.default || null
-);
-if (resolvedFfmpegPath) {
-  process.env.FFMPEG_PATH = resolvedFfmpegPath;
-  if (process.platform !== "win32") {
-    try {
-      if (fs.existsSync(resolvedFfmpegPath)) {
-        fs.chmodSync(resolvedFfmpegPath, 0o755);
-        console.log(`[FFmpeg] Đã cấp quyền thực thi (0755) cho Linux binary tại: ${resolvedFfmpegPath}`);
-      }
-    } catch (chmodErr) {
-      console.warn("[FFmpeg] Không thể đặt quyền thực thi chmod:", chmodErr);
-    }
-  }
-}
-console.log(`[FFmpeg] Tích hợp FFmpeg-Static thành công tại: ${process.env.FFMPEG_PATH || config.ffmpegPath}`);
+console.log(`[FFmpeg] Tích hợp FFmpeg-Static thành công tại: ${config.ffmpegPath}`);
 
 // 1. Bộ chống sập toàn cục (Global Crash Handlers)
 process.on("unhandledRejection", (reason: any, promise: Promise<any>) => {
@@ -188,59 +178,21 @@ const client = new Client({
 
 // 3. Khởi tạo PlayerManager chuẩn singleton duy nhất cho toàn bộ ứng dụng (SAU KHI ĐÃ OVERRIDE FETCH)
 const youtubeCookie = process.env.YOUTUBE_COOKIE;
-const youtubePlugin = new YouTubePlugin({
+const youtubePlugin = new SafeYouTubePlugin({
   clientType: "IOS",
   searchClientType: "IOS",
   cookie: youtubeCookie,
-  fistStream: async (track: any) => {
-    try {
-      const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
-      if (!id) return null;
-      const yt = (youtubePlugin as any).client;
-      if (!yt) return null;
-      const webStream = await yt.download(id, {
-        type: "audio",
-        quality: "best",
-        client: "IOS",
-      });
-      return {
-        stream: Readable.fromWeb(webStream as any),
-        type: "arbitrary",
-      };
-    } catch {
-      return null;
-    }
-  },
-  fallbackStream: async (track: any) => {
-    try {
-      const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
-      if (!id) return null;
-      const yt = (youtubePlugin as any).client;
-      if (!yt) return null;
-      const webStream = await yt.download(id, {
-        type: "audio",
-        quality: "best",
-        client: "ANDROID",
-      });
-      return {
-        stream: Readable.fromWeb(webStream as any),
-        type: "arbitrary",
-      };
-    } catch {
-      return null;
-    }
-  },
 } as any);
 
 const managerPlugins = IS_RENDER
   ? [
-      youtubePlugin, // YouTubePlugin ưu tiên hàng đầu
-      new SoundCloudPlugin(),
+      youtubePlugin, // SafeYouTubePlugin ưu tiên hàng đầu
+      new SafeSoundCloudPlugin(),
       new SpotifyPlugin(),
     ]
   : [
       youtubePlugin,
-      new SoundCloudPlugin(),
+      new SafeSoundCloudPlugin(),
       new SpotifyPlugin(),
       new TTSPlugin({ defaultLang: "vi" }),
       new AttachmentsPlugin({ maxFileSize: 25 * 1024 * 1024 }), // 25MB
