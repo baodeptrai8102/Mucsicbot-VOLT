@@ -86,6 +86,11 @@ import {
   TTSPlugin,
   YouTubePlugin,
 } from "@ziplayer/plugin";
+import { Platform } from "youtubei.js";
+import { Readable } from "node:stream";
+
+// Đảm bảo Platform.shim.fetch của youtubei.js trỏ đúng vào override fetch
+Platform.shim.fetch = globalThis.fetch;
 import { getPlayer, PlayerManager } from "ziplayer";
 import { checkCooldown, config } from "./config.js";
 import * as helpCommand from "./commands/help.js";
@@ -141,9 +146,49 @@ const client = new Client({
 
 // 3. Khởi tạo PlayerManager chuẩn singleton duy nhất cho toàn bộ ứng dụng (SAU KHI ĐÃ OVERRIDE FETCH)
 const youtubeCookie = process.env.YOUTUBE_COOKIE;
-const youtubePlugin = new YouTubePlugin(
-  youtubeCookie ? ({ cookie: youtubeCookie } as any) : undefined
-);
+const youtubePlugin = new YouTubePlugin({
+  clientType: "IOS",
+  searchClientType: "IOS",
+  cookie: youtubeCookie,
+  fistStream: async (track: any) => {
+    try {
+      const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
+      if (!id) return null;
+      const yt = (youtubePlugin as any).client;
+      if (!yt) return null;
+      const webStream = await yt.download(id, {
+        type: "audio",
+        quality: "best",
+        client: "IOS",
+      });
+      return {
+        stream: Readable.fromWeb(webStream as any),
+        type: "arbitrary",
+      };
+    } catch {
+      return null;
+    }
+  },
+  fallbackStream: async (track: any) => {
+    try {
+      const id = track.id || track.url?.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/)?.[1];
+      if (!id) return null;
+      const yt = (youtubePlugin as any).client;
+      if (!yt) return null;
+      const webStream = await yt.download(id, {
+        type: "audio",
+        quality: "best",
+        client: "ANDROID",
+      });
+      return {
+        stream: Readable.fromWeb(webStream as any),
+        type: "arbitrary",
+      };
+    } catch {
+      return null;
+    }
+  },
+} as any);
 
 const manager = new PlayerManager({
   plugins: [
